@@ -119,6 +119,39 @@ def _in_session(symbol: str, now: datetime) -> bool:
     return False
 
 
+# [ADD 2026-08-16, explicit user instruction] No new entries within this
+# many minutes of the pair's own session-close deadline (trade_manager's
+# force-close, tied to the LAST window's end each day -- see
+# is_session_close there). Empirically confirmed on real backtest data:
+# trades opened 30-60 min before forced closure had negative average P&L
+# (-$14.66 and -$7.51 avg) and got force-closed 88-100% of the time,
+# vs. +$6.44 avg / 20.1% forced-close for trades with normal room to
+# develop -- they never get time to reach SL/TP naturally, just wasted
+# spread/commission. Matches the identical fix already proven on the
+# sister Forex app's real-money accounts (30-min version there). 45 min
+# chosen over 30, per explicit user reasoning: FX pairs develop moves
+# more gradually across a session than gold's near-continuous liquidity.
+#
+# Only applies relative to the LAST window's end (where forced closure
+# actually happens) -- entries near an EARLIER window's end aren't cut,
+# since a position opened there just keeps riding into the next window
+# rather than being force-closed (see trade_manager.is_session_close's
+# own docstring for why only the last window's end matters for closure).
+#
+# Edge case: AUDCAD's second window (16:30-17:00 IST) is only 30 minutes
+# long -- shorter than this 45-minute cutoff -- so it gets zero new
+# entries in that window entirely (its first window, 11:00-14:30, is
+# unaffected). Existing positions can still ride into and force-close at
+# 17:00 as normal; only new entries in that narrow slot are removed.
+ENTRY_CUTOFF_MINUTES_BEFORE_CLOSE = 45
+
+
+def _entry_cutoff_reached(symbol: str, now: datetime) -> bool:
+    minutes = _ist_minutes_of_day(now)
+    last_window_end = max(end for _, end in PAIR_CALIBRATION[symbol].session_windows_ist)
+    return minutes >= last_window_end - ENTRY_CUTOFF_MINUTES_BEFORE_CLOSE
+
+
 def _find_recent_sweep(df_15m: pd.DataFrame, pools, sweep_mem: int) -> Optional[Dict]:
     """Scans the last `sweep_mem` bars (not just the latest one) for a
     liquidity sweep, keeping the most recent match — approximates V109's
@@ -214,6 +247,8 @@ def entry_signal(
 
     # ── Hard gate (V109-faithful: session, news, MSS, parabolic, trend-filter only) ──
     if not _in_session(symbol, now):
+        return None
+    if _entry_cutoff_reached(symbol, now):
         return None
     if calendar.in_blackout()["blocked"]:
         return None
