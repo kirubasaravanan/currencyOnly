@@ -1,0 +1,134 @@
+"""Discord webhook alerts: entry, exit, session summaries, EOD summary.
+
+Live-only — orchestrator.py wires these in; the backtester never imports
+this module, so a historical replay can never spam Discord with months of
+fake alerts. Every send is fire-and-forget (best-effort — a slow or failed
+webhook never blocks or crashes the scan loop).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+from datetime import datetime, timezone
+from typing import Dict, List, Optional
+
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
+
+GREEN = 0x26A875
+RED = 0xE5484D
+BLUE = 0x4F8CFF
+AMBER = 0xD4A72C
+
+
+def _send_sync(payload: Dict) -> None:
+    if not DISCORD_WEBHOOK_URL:
+        return
+    try:
+        requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=8)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[discord_alerts] send failed: {exc}")
+
+
+async def _send_embed(embed: Dict) -> None:
+    embed.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+    await asyncio.to_thread(_send_sync, {"embeds": [embed]})
+
+
+def _fmt_price(v: Optional[float], decimals: int = 5) -> str:
+    if v is None:
+        return "-"
+    try:
+        return f"{v:.{decimals}f}"
+    except Exception:  # noqa: BLE001
+        return str(v)
+
+
+async def alert_trade_opened(trade: Dict) -> None:
+    is_long = trade.get("side") == "BULLISH"
+    embed = {
+        "title": f"{'🟢' if is_long else '🔴'} {trade['symbol']} {trade.get('side')} — ENTRY",
+        "color": GREEN if is_long else RED,
+        "fields": [
+            {"name": "Entry", "value": _fmt_price(trade.get("entry_price")), "inline": True},
+            {"name": "SL", "value": _fmt_price(trade.get("sl_price")), "inline": True},
+            {"name": "TP1", "value": _fmt_price(trade.get("tp_price")), "inline": True},
+            {"name": "TP2", "value": _fmt_price(trade.get("tp2_price")), "inline": True},
+            {"name": "Lots", "value": str(trade.get("lots")), "inline": True},
+            {"name": "Confidence", "value": f"{trade.get('confidence', 0) * 100:.0f}%", "inline": True},
+            {"name": "Session", "value": str(trade.get("session", "-")), "inline": True},
+        ],
+    }
+    await _send_embed(embed)
+
+
+async def alert_trade_closed(trade: Dict) -> None:
+    net = trade.get("pnl", 0.0)
+    win = net > 0
+    embed = {
+        "title": f"{'✅' if win else '❌'} {trade['symbol']} CLOSED — {trade.get('reason', '')}",
+        "color": GREEN if win else RED,
+        "fields": [
+            {"name": "Exit", "value": _fmt_price(trade.get("exit_price")), "inline": True},
+            {"name": "Gross", "value": f"${trade.get('pnl_gross', net):.2f}", "inline": True},
+            {"name": "Commission", "value": f"${trade.get('commission_paid', 0):.2f}", "inline": True},
+            {"name": "Net", "value": f"${net:.2f}", "inline": True},
+        ],
+    }
+    await _send_embed(embed)
+
+
+def _aggregate(trades: List[Dict]) -> Dict:
+    wins = sum(1 for t in trades if t.get("pnl", 0) > 0)
+    losses = len(trades) - wins
+    return {
+        "wins": wins,
+        "losses": losses,
+        "gross": sum(t.get("pnl_gross", t.get("pnl", 0)) for t in trades),
+        "commission": sum(t.get("commission_paid", 0) for t in trades),
+        "net": sum(t.get("pnl", 0) for t in trades),
+    }
+
+
+async def alert_session_summary(session_name: str, trades: List[Dict]) -> None:
+    if not trades:
+        return
+    agg = _aggregate(trades)
+    lines = "\n".join(f"{t['symbol']}: ${t.get('pnl', 0):.2f} ({t.get('reason', '')})" for t in trades)
+    embed = {
+        "title": f"📊 {session_name.upper()} SESSION SUMMARY",
+        "color": BLUE,
+        "description": lines[:4000],
+        "fields": [
+            {"name": "Trades", "value": f"{len(trades)} ({agg['wins']}W/{agg['losses']}L)", "inline": True},
+            {"name": "Gross", "value": f"${agg['gross']:.2f}", "inline": True},
+            {"name": "Commission", "value": f"${agg['commission']:.2f}", "inline": True},
+            {"name": "Net", "value": f"${agg['net']:.2f}", "inline": True},
+        ],
+    }
+    await _send_embed(embed)
+
+
+async def alert_eod_summary(date_str: str, trades: List[Dict], equity: float, drawdown_pct: float) -> None:
+    agg = _aggregate(trades)
+    embed = {
+        "title": f"🌙 END OF DAY SUMMARY — {date_str}",
+        "color": AMBER,
+        "fields": [
+            {"name": "Trades", "value": f"{len(trades)} ({agg['wins']}W/{agg['losses']}L)", "inline": True},
+            {"name": "Gross", "value": f"${agg['gross']:.2f}", "inline": True},
+            {"name": "Commission", "value": f"${agg['commission']:.2f}", "inline": True},
+            {"name": "Net", "value": f"${agg['net']:.2f}", "inline": True},
+            {"name": "Equity", "value": f"${equity:.2f}", "inline": True},
+            {"name": "Drawdown", "value": f"{drawdown_pct:.2f}%", "inline": True},
+        ],
+    }
+    await _send_embed(embed)
+
+
+async def alert_engine_event(title: str, description: str = "", color: int = BLUE) -> None:
+    await _send_embed({"title": title, "description": description, "color": color})

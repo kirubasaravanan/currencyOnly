@@ -1,0 +1,169 @@
+"""Live 60s scan loop: fetch -> hybrid-gate signal -> risk/correlation
+checks -> paper broker -> trade management. Deliberately mirrors the
+backtester's per-bar logic (same entry_signal/risk/correlation/
+trade_manager calls) so live and backtest can't silently diverge.
+
+Also fires Discord alerts (entry, exit, session summary, EOD summary) —
+live-only, since this module (unlike paper_broker.py) is never touched by
+the backtester, a historical replay can never trigger a fake alert.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional
+
+from config import PAIRS, MTF_TIMEFRAMES, ENGINE_LOOP_SECONDS, state
+from data.market_data import market_data
+from engine import risk, correlation, trade_manager, currency_strength, discord_alerts
+from engine.entry import entry_signal
+from engine.paper_broker import broker
+from engine.session_dominance import current_session
+
+_task: Optional[asyncio.Task] = None
+last_signals: Dict[str, Dict] = {}
+last_error: Optional[str] = None
+
+_alerted_closed_count = 0
+_current_session_name: Optional[str] = None
+_session_trades: List[Dict] = []
+_current_ist_date: Optional[str] = None
+_day_trades: List[Dict] = []
+
+IST_OFFSET = timedelta(hours=5, minutes=30)
+
+
+def _ist_date_str(now: datetime) -> str:
+    return (now + IST_OFFSET).date().isoformat()
+
+
+async def _process_new_closed_trades(now: datetime) -> None:
+    """Diffs broker.closed_trades against the last-seen count to find newly
+    closed trades since the previous scan, fires exit alerts for each, and
+    buckets them into the running session/day accumulators."""
+    global _alerted_closed_count
+    new_trades = broker.closed_trades[_alerted_closed_count:]
+    _alerted_closed_count = len(broker.closed_trades)
+    for t in new_trades:
+        await discord_alerts.alert_trade_closed(t)
+        _session_trades.append(t)
+        _day_trades.append(t)
+
+
+async def _check_session_rollover(now: datetime) -> None:
+    global _current_session_name, _session_trades
+    session_name = current_session(now)
+    if _current_session_name is None:
+        _current_session_name = session_name
+        return
+    if session_name != _current_session_name:
+        await discord_alerts.alert_session_summary(_current_session_name, _session_trades)
+        _current_session_name = session_name
+        _session_trades = []
+
+
+async def _check_eod_rollover(now: datetime) -> None:
+    global _current_ist_date, _day_trades
+    date_str = _ist_date_str(now)
+    if _current_ist_date is None:
+        _current_ist_date = date_str
+        return
+    if date_str != _current_ist_date:
+        await discord_alerts.alert_eod_summary(_current_ist_date, _day_trades, broker.equity, _drawdown_pct())
+        _current_ist_date = date_str
+        _day_trades = []
+
+
+def _drawdown_pct() -> float:
+    if broker.peak_equity <= 0:
+        return 0.0
+    return round(((broker.peak_equity - broker.equity) / broker.peak_equity) * 100.0, 2)
+
+
+async def _scan_once() -> None:
+    global last_error
+    now = datetime.now(timezone.utc)
+    prices: Dict[str, float] = {}
+    frames_by_symbol: Dict[str, Dict] = {}
+
+    for symbol in PAIRS:
+        try:
+            frames = await market_data.fetch_multi(symbol, MTF_TIMEFRAMES)
+        except Exception as exc:  # noqa: BLE001
+            last_error = f"{symbol} fetch: {exc}"
+            continue
+        frames_by_symbol[symbol] = frames
+        df15 = frames.get("15m")
+        if df15 is not None and not df15.empty:
+            prices[symbol] = float(df15["close"].iloc[-1])
+
+    if not prices:
+        return
+
+    trade_manager.manage_open_positions(broker, prices, now)
+    await _process_new_closed_trades(now)
+    await _check_session_rollover(now)
+    await _check_eod_rollover(now)
+
+    ranking = currency_strength.compute_ranking({s: f.get("1h") for s, f in frames_by_symbol.items()})
+
+    open_symbols = {t["symbol"] for t in broker.open_positions}
+    for symbol, frames in frames_by_symbol.items():
+        if symbol in open_symbols or symbol not in prices:
+            continue
+        if trade_manager.in_cooldown(symbol, now, broker.closed_trades):
+            continue
+
+        risk_check = risk.can_open_new_trade(broker.open_positions, broker.closed_trades, broker.equity, broker.peak_equity)
+        if not risk_check["allowed"]:
+            continue
+
+        try:
+            signal = entry_signal(symbol, frames, now=now, currency_ranking=ranking)
+        except Exception as exc:  # noqa: BLE001
+            last_error = f"{symbol} entry_signal: {exc}"
+            continue
+
+        if signal is None:
+            continue
+        last_signals[symbol] = signal
+
+        exposure = correlation.would_exceed_exposure(symbol, signal["side"], broker.open_positions)
+        if exposure["blocked"]:
+            continue
+
+        sizing = risk.position_size(symbol, broker.equity, signal["entry_price"], signal["sl_price"], signal.get("size_multiplier", 1.0), prices)
+        trade = broker.open_trade(signal, sizing["lots"])
+        if trade is not None:
+            await discord_alerts.alert_trade_opened(trade)
+        open_symbols.add(symbol)
+
+
+async def _loop() -> None:
+    global last_error
+    state.running = True
+    state.started_at = datetime.now(timezone.utc).timestamp()
+    await discord_alerts.alert_engine_event("🚀 currencyOnly engine started", f"{len(PAIRS)} pairs, paper trading only")
+    while state.running:
+        try:
+            await _scan_once()
+            state.last_scan_at = datetime.now(timezone.utc).timestamp()
+            state.scan_count += 1
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)
+        await asyncio.sleep(ENGINE_LOOP_SECONDS)
+
+
+async def start() -> None:
+    global _task
+    if _task is None or _task.done():
+        _task = asyncio.create_task(_loop())
+
+
+async def stop() -> None:
+    state.running = False
+    global _task
+    if _task is not None:
+        _task.cancel()
+        _task = None

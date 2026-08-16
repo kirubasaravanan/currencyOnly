@@ -1,0 +1,7 @@
+{
+  "name": "currencyonly-engine-supervisor",
+  "private": true,
+  "scripts": {
+    "dev": "node spawn-engine.cjs"
+  }
+}

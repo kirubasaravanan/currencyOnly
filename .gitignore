@@ -1,0 +1,15 @@
+node_modules/
+.next/
+.venv/
+*.log
+__pycache__/
+*.pyc
+.env
+!.env.example
+trading-engine/storage/*.json
+!trading-engine/storage/.gitkeep
+db/*.db
+.zscripts/*.pid
+bun.lock
+package-lock.json
+tsconfig.tsbuildinfo
