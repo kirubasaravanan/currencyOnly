@@ -94,13 +94,18 @@ def _aggregate(trades: List[Dict]) -> Dict:
     }
 
 
-async def alert_session_summary(session_name: str, trades: List[Dict]) -> None:
+async def alert_session_summary(session_name: str, trades: List[Dict], scope_label: str = "ALL 17 PAIRS") -> None:
+    """scope_label distinguishes which symbol subset this summary covers —
+    orchestrator.py sends this once for MAJORS and once for ALL 17 PAIRS
+    per session/EOD, per explicit user request, so majors-only performance
+    is visible separately from the full portfolio while deciding which
+    crosses (if any) to add on top of a majors-only core."""
     if not trades:
         return
     agg = _aggregate(trades)
     lines = "\n".join(f"{t['symbol']}: ${t.get('pnl', 0):.2f} ({t.get('reason', '')})" for t in trades)
     embed = {
-        "title": f"📊 {session_name.upper()} SESSION SUMMARY",
+        "title": f"📊 {session_name.upper()} SESSION SUMMARY — {scope_label}",
         "color": BLUE,
         "description": lines[:4000],
         "fields": [
@@ -113,11 +118,14 @@ async def alert_session_summary(session_name: str, trades: List[Dict]) -> None:
     await _send_embed(embed)
 
 
-async def alert_eod_summary(date_str: str, trades: List[Dict], equity: float, drawdown_pct: float) -> None:
+async def alert_eod_summary(date_str: str, trades: List[Dict], equity: float, drawdown_pct: float,
+                             scope_label: str = "ALL 17 PAIRS") -> None:
     agg = _aggregate(trades)
+    lines = "\n".join(f"{t['symbol']}: ${t.get('pnl', 0):.2f} ({t.get('reason', '')})" for t in trades)
     embed = {
-        "title": f"🌙 END OF DAY SUMMARY — {date_str}",
+        "title": f"🌙 END OF DAY SUMMARY — {date_str} — {scope_label}",
         "color": AMBER,
+        "description": lines[:4000],
         "fields": [
             {"name": "Trades", "value": f"{len(trades)} ({agg['wins']}W/{agg['losses']}L)", "inline": True},
             {"name": "Gross", "value": f"${agg['gross']:.2f}", "inline": True},

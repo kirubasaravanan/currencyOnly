@@ -14,7 +14,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
-from config import PAIRS, MTF_TIMEFRAMES, ENGINE_LOOP_SECONDS, state
+from config import PAIRS, MAJORS, MTF_TIMEFRAMES, ENGINE_LOOP_SECONDS, state
 from data.market_data import market_data
 from engine import risk, correlation, trade_manager, currency_strength, discord_alerts
 from engine.entry import entry_signal
@@ -51,6 +51,10 @@ async def _process_new_closed_trades(now: datetime) -> None:
         _day_trades.append(t)
 
 
+def _majors_subset(trades: List[Dict]) -> List[Dict]:
+    return [t for t in trades if t["symbol"] in MAJORS]
+
+
 async def _check_session_rollover(now: datetime) -> None:
     global _current_session_name, _session_trades
     session_name = current_session(now)
@@ -58,7 +62,12 @@ async def _check_session_rollover(now: datetime) -> None:
         _current_session_name = session_name
         return
     if session_name != _current_session_name:
-        await discord_alerts.alert_session_summary(_current_session_name, _session_trades)
+        # Two separate messages per explicit user request: majors-only
+        # performance visible independently from the full 17-pair set,
+        # to inform which (if any) crosses get added on top of a
+        # majors-only core.
+        await discord_alerts.alert_session_summary(_current_session_name, _majors_subset(_session_trades), "MAJORS")
+        await discord_alerts.alert_session_summary(_current_session_name, _session_trades, "ALL 17 PAIRS")
         _current_session_name = session_name
         _session_trades = []
 
@@ -70,7 +79,9 @@ async def _check_eod_rollover(now: datetime) -> None:
         _current_ist_date = date_str
         return
     if date_str != _current_ist_date:
-        await discord_alerts.alert_eod_summary(_current_ist_date, _day_trades, broker.equity, _drawdown_pct())
+        dd = _drawdown_pct()
+        await discord_alerts.alert_eod_summary(_current_ist_date, _majors_subset(_day_trades), broker.equity, dd, "MAJORS")
+        await discord_alerts.alert_eod_summary(_current_ist_date, _day_trades, broker.equity, dd, "ALL 17 PAIRS")
         _current_ist_date = date_str
         _day_trades = []
 
