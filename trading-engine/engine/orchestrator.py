@@ -17,7 +17,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
-from config import PAIRS, MAJORS, MTF_TIMEFRAMES, ENGINE_LOOP_SECONDS, state
+from config import PAIRS, MAJORS, MTF_TIMEFRAMES, ENGINE_LOOP_SECONDS, SESSIONS_UTC, state
 from data.market_data import market_data
 from engine import risk, correlation, trade_manager, currency_strength, discord_alerts, tradesgnl_relay, trade_sync_heartbeat
 from engine.entry import entry_signal
@@ -230,7 +230,7 @@ async def _loop() -> None:
 
 
 async def start() -> None:
-    global _task, _alerted_closed_count
+    global _task, _alerted_closed_count, _day_trades, _session_trades, _current_ist_date, _current_session_name
     if _task is None or _task.done():
         # Re-arm the relay's confirmed-sent tracking for whatever's already
         # open in the paper broker -- otherwise a restart silently strands
@@ -245,6 +245,35 @@ async def start() -> None:
         # every one of them at once. Seeding it to the current length means
         # only trades that close AFTER this startup count as new.
         _alerted_closed_count = len(broker.closed_trades)
+
+        # [FIX 2026-08-17, found live -- user reported an EOD summary
+        # showing all zeros despite a full day of real trades] Same root
+        # pattern as the two fixes just above: _day_trades/_session_trades
+        # are plain in-memory lists that only ever grow via
+        # _process_new_closed_trades() as closes happen AFTER this process
+        # started -- a restart during the trading day (this app restarted
+        # several times today alone, e.g. to deploy the 20:05 EOD-timing
+        # change itself) reset them to empty while broker.closed_trades
+        # (persisted) still has the real history. The EOD/session alerts
+        # then reported "0 trades" even though the day's trades genuinely
+        # happened. Seed both from broker.closed_trades on startup instead
+        # of trusting them to have been empty all along.
+        now = datetime.now(timezone.utc)
+        _current_ist_date = _ist_date_str(now)
+        _day_trades = [
+            t for t in broker.closed_trades
+            if t.get("closed_at") and _ist_date_str(datetime.fromisoformat(t["closed_at"])) == _current_ist_date
+        ]
+
+        _current_session_name = current_session(now)
+        session_hours = SESSIONS_UTC.get(_current_session_name)
+        if session_hours is not None:
+            session_start = now.replace(hour=session_hours[0], minute=0, second=0, microsecond=0)
+            _session_trades = [
+                t for t in broker.closed_trades
+                if t.get("closed_at") and datetime.fromisoformat(t["closed_at"]) >= session_start
+            ]
+
         _task = asyncio.create_task(_loop())
 
 
