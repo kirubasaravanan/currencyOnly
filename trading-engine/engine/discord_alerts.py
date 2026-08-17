@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 import requests
@@ -48,6 +48,23 @@ def _fmt_price(v: Optional[float], decimals: int = 5) -> str:
         return str(v)
 
 
+IST_OFFSET = timedelta(hours=5, minutes=30)
+
+
+def _fmt_ist(iso_ts: Optional[str]) -> str:
+    """opened_at is stored as UTC isoformat; render in IST (this app's
+    timezone convention throughout, e.g. orchestrator.py session/EOD
+    rollovers) so an entry and its later exit alert can be matched up
+    without doing UTC->IST math by hand."""
+    if not iso_ts:
+        return "-"
+    try:
+        dt = datetime.fromisoformat(iso_ts) + IST_OFFSET
+        return dt.strftime("%H:%M:%S IST")
+    except Exception:  # noqa: BLE001
+        return str(iso_ts)
+
+
 async def alert_trade_opened(trade: Dict) -> None:
     is_long = trade.get("side") == "BULLISH"
     embed = {
@@ -73,6 +90,8 @@ async def alert_trade_closed(trade: Dict) -> None:
         "title": f"{'✅' if win else '❌'} {trade['symbol']} CLOSED — {trade.get('reason', '')}",
         "color": GREEN if win else RED,
         "fields": [
+            {"name": "Entry", "value": _fmt_price(trade.get("entry_price")), "inline": True},
+            {"name": "Entry Time", "value": _fmt_ist(trade.get("opened_at")), "inline": True},
             {"name": "Exit", "value": _fmt_price(trade.get("exit_price")), "inline": True},
             {"name": "Gross", "value": f"${trade.get('pnl_gross', net):.2f}", "inline": True},
             {"name": "Commission", "value": f"${trade.get('commission_paid', 0):.2f}", "inline": True},
