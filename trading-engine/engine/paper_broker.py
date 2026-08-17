@@ -12,8 +12,17 @@ and exit and tracked as its own `commission_paid` field, separate from
 The profit-based trailing stop and 50%-partial-then-runner-to-TP2 design
 are direct ports of V109's own "SINGLE-TRADE SCALE-OUT EDITION" — the live
 Forex/Forex app disabled this (PAPER_SL_DYNAMICS_ENABLED = False) because
-its real broker relay can't modify SL/TP mid-trade; that constraint
-doesn't exist here since there is no relay at all.
+its real broker relay can't modify SL/TP mid-trade.
+
+[UPDATED 2026-08-16] This app now optionally does relay too (see
+engine/tradesgnl_relay.py), and hit the identical problem: TradeSgnl also
+can't modify an already-open order's SL/TP, so the config.EXIT_MODE
+toggle now exists so the SAME logic runs identically here and on the
+relay side, instead of the two silently diverging. See config.EXIT_MODE's
+own comment for the full story (found via a real live mismatch, not
+theoretical) — "dynamic" is this module's original partial+trailing
+design, "static" is a plain fixed SL/TP with no partial and no trailing,
+selectable at runtime to A/B them against each other on real outcomes.
 """
 
 from __future__ import annotations
@@ -23,6 +32,7 @@ import os
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
+import config
 from config import (
     INITIAL_BALANCE,
     CONTRACT_SIZE_USD,
@@ -154,8 +164,10 @@ class PaperBroker:
             favorable_move = direction * (price - t["entry_price"])
             t["peak_favorable_move"] = max(t["peak_favorable_move"], favorable_move)
 
-            self._maybe_move_to_breakeven(t, favorable_move)
-            self._update_trailing_stop(t, favorable_move)
+            dynamic = config.state.exit_mode == "dynamic"
+            if dynamic:
+                self._maybe_move_to_breakeven(t, favorable_move)
+                self._update_trailing_stop(t, favorable_move)
 
             sl, tp = t["sl_price"], t["tp_price"]
             if direction == 1:
@@ -163,23 +175,31 @@ class PaperBroker:
                     reason = "break_even" if t["be_moved"] else "stop_loss"
                     self.close_trade(t["id"], sl, reason, prices)
                     continue
-                if price >= tp and not t["partial_taken"]:
-                    self._take_partial(t, tp, 0.5, prices)
-                    continue
-                if t["partial_taken"] and price >= t["tp2_price"]:
-                    self.close_trade(t["id"], t["tp2_price"], "take_profit_runner", prices)
-                    continue
+                if price >= tp:
+                    if not dynamic:
+                        self.close_trade(t["id"], tp, "take_profit", prices)
+                        continue
+                    if not t["partial_taken"]:
+                        self._take_partial(t, tp, 0.5, prices)
+                        continue
+                    if price >= t["tp2_price"]:
+                        self.close_trade(t["id"], t["tp2_price"], "take_profit_runner", prices)
+                        continue
             else:
                 if price >= sl:
                     reason = "break_even" if t["be_moved"] else "stop_loss"
                     self.close_trade(t["id"], sl, reason, prices)
                     continue
-                if price <= tp and not t["partial_taken"]:
-                    self._take_partial(t, tp, 0.5, prices)
-                    continue
-                if t["partial_taken"] and price <= t["tp2_price"]:
-                    self.close_trade(t["id"], t["tp2_price"], "take_profit_runner", prices)
-                    continue
+                if price <= tp:
+                    if not dynamic:
+                        self.close_trade(t["id"], tp, "take_profit", prices)
+                        continue
+                    if not t["partial_taken"]:
+                        self._take_partial(t, tp, 0.5, prices)
+                        continue
+                    if price <= t["tp2_price"]:
+                        self.close_trade(t["id"], t["tp2_price"], "take_profit_runner", prices)
+                        continue
 
         self.equity = round(self.balance + sum(t["pnl"] for t in self.open_positions), 2)
         self.peak_equity = max(self.peak_equity, self.equity)

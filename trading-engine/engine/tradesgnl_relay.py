@@ -29,6 +29,36 @@ uses for every one of its own relay targets. This is a real behavior
 change to this repo's standing "zero order-placement code" guarantee —
 see README.md for the explicit, current statement of what this does and
 how to turn it off.
+
+[FIX 2026-08-16, same day, explicit user instruction] First live fills
+(NZDCAD, AUDCAD) showed the real MT5 position closing via the broker's
+own static pending TP order at the ORIGINAL entry-time price, days before
+the paper engine's own trailing-stop logic would have exited — a real
+mismatch, not a timing artifact. Root cause: TradeSgnl does not support
+modifying an already-open order's SL/TP via webhook (documented directly
+in the user's own V109 Pine script's header comment: "the broker-side
+order keeps whatever SL/TP was sent at entry until Pine itself fires a
+closelong/closeshort command"). Sending the paper engine's real tp_price
+at entry means the broker's own pending order can fire on its own,
+completely bypassing the paper engine's actual exit logic (50%
+partial-at-TP1, then a trailing stop on the remainder that usually exits
+well before the fixed TP2 — see paper_broker.py). Fixed two ways:
+  1. Entry now sends a deliberately unreachable TP (WIDE_TP_MULTIPLIER x
+     the real target distance) instead of the real one -- the broker-side
+     pending order effectively never fires on its own; the paper engine's
+     own explicit close command (send_close, or send_partial_close below)
+     becomes the ONLY thing that ever closes or trims the real position.
+     SL stays real and tight -- it's the correct safety net if this
+     engine ever crashes or loses connectivity, which a wide TP is not.
+  2. Added send_partial_close(), using the "closelongvol"/"closeshortvol"
+     command grammar documented in the user's own V109 script's own
+     partial-close alert code -- relays the 50%-at-TP1 partial exactly
+     when paper_broker.py's own _take_partial() fires (see orchestrator.py
+     for the detection hook, since _take_partial() doesn't move a trade
+     into closed_trades the way a full close does).
+  Note: this does NOT retroactively fix positions already opened with the
+  old tight TP before this change -- those still carry their original
+  static broker-side TP until they close on their own.
 """
 
 from __future__ import annotations
@@ -41,6 +71,7 @@ from typing import Dict, Set
 import requests
 from dotenv import load_dotenv
 
+import config
 from config import PIP_SIZE
 
 load_dotenv()
@@ -51,11 +82,22 @@ TRADESGNL_WEBHOOK_URL = os.getenv("TRADESGNL_WEBHOOK_URL", "https://webhook.trad
 _last_send_ts = 0.0
 _MIN_INTERVAL_SECONDS = 1.0
 
+# How far past the real target the broker-side pending TP is pushed, in
+# multiples of the real entry-to-TP2 distance -- large enough that it
+# should never be reached before the paper engine's own trailing-stop
+# logic decides to exit and sends an explicit close/partial-close itself.
+WIDE_TP_MULTIPLIER = 20.0
+
 # Only send_close() for a trade ID we actually confirmed send_entry() sent
 # successfully for — mirrors the sister app's own fix for the same bug
 # (close commands firing for tickets that were never really opened on the
 # relayed account because the entry send failed or was skipped).
 _confirmed_open_ids: Set[int] = set()
+
+# Track which trade IDs already had their 50%-partial relayed, so a
+# second scan seeing the same already-partial-taken trade doesn't
+# double-send the partial-close command.
+_relayed_partial_ids: Set[int] = set()
 
 
 def _fmt_price(symbol: str, price: float) -> str:
@@ -92,22 +134,65 @@ def _send_sync(command: str) -> bool:
         return False
 
 
+def _wide_tp_price(trade: Dict) -> float:
+    """Deliberately unreachable TP -- see the module docstring's 2026-08-16
+    fix note. Extends WIDE_TP_MULTIPLIER x the real entry-to-TP2 distance
+    past entry, in the trade's own direction (tp2_price - entry_price is
+    already signed correctly for both long and short)."""
+    entry = trade["entry_price"]
+    return entry + WIDE_TP_MULTIPLIER * (trade["tp2_price"] - entry)
+
+
 async def send_entry(trade: Dict) -> None:
     if not TRADESGNL_LICENSE_ID:
         return
     symbol = trade["symbol"]
     is_long = trade["side"] in ("BUY", "BULLISH")
     action = "buy" if is_long else "sell"
+    # config.EXIT_MODE drives both paper_broker.py and this relay
+    # identically -- "static" sends the REAL tp_price and lets the
+    # broker's own pending order do the work (no partial, no trailing on
+    # the paper side either); "dynamic" sends a deliberately unreachable
+    # TP and relies entirely on explicit close/partial-close commands,
+    # matching paper's own partial+trailing behavior.
+    tp_to_send = trade["tp_price"] if config.state.exit_mode == "static" else _wide_tp_price(trade)
     command = (
         f"{TRADESGNL_LICENSE_ID},{symbol},{action},"
         f"risk={trade['lots']:.2f},"
         f"sl_price={_fmt_price(symbol, trade['sl_price'])},"
-        f"tp_price={_fmt_price(symbol, trade['tp_price'])},"
+        f"tp_price={_fmt_price(symbol, tp_to_send)},"
         f"comment={_comment_id(symbol, trade['side'])}"
     )
     sent = await asyncio.to_thread(_send_sync, command)
     if sent:
         _confirmed_open_ids.add(trade["id"])
+
+
+async def send_partial_close(trade: Dict) -> None:
+    """Relays the 50%-at-TP1 partial the paper engine just took (see
+    paper_broker.py's _take_partial()). Uses the closelongvol/closeshortvol
+    command grammar documented in the user's own V109 script's partial-
+    close alert code. Only fires for a trade we confirmed the entry for,
+    and only once per trade."""
+    if not TRADESGNL_LICENSE_ID:
+        return
+    if trade["id"] not in _confirmed_open_ids:
+        return
+    if trade["id"] in _relayed_partial_ids:
+        return
+    _relayed_partial_ids.add(trade["id"])
+    symbol = trade["symbol"]
+    is_long = trade["side"] in ("BUY", "BULLISH")
+    action = "closelongvol" if is_long else "closeshortvol"
+    # Half of the ORIGINAL size -- trade["lots"] has already been reduced
+    # to the remaining half by the time partial_taken flips True.
+    half_lots = trade["lots"]
+    command = (
+        f"{TRADESGNL_LICENSE_ID},{symbol},{action},"
+        f"vol_lots={half_lots:.2f},"
+        f"comment={_comment_id(symbol, trade['side'])}"
+    )
+    await asyncio.to_thread(_send_sync, command)
 
 
 async def send_close(trade: Dict) -> None:
@@ -116,6 +201,7 @@ async def send_close(trade: Dict) -> None:
     if trade["id"] not in _confirmed_open_ids:
         return  # entry was never confirmed-sent -- nothing real to close
     _confirmed_open_ids.discard(trade["id"])
+    _relayed_partial_ids.discard(trade["id"])
     symbol = trade["symbol"]
     is_long = trade["side"] in ("BUY", "BULLISH")
     close_action = "closelong" if is_long else "closeshort"

@@ -58,6 +58,10 @@ class ThresholdRequest(BaseModel):
     threshold: float
 
 
+class ExitModeRequest(BaseModel):
+    exit_mode: str
+
+
 class BacktestRequest(BaseModel):
     symbols: Optional[List[str]] = None
     days: int = 30
@@ -96,6 +100,7 @@ def register_routes(app: FastAPI) -> None:
             "closed_trades": broker.closed_trades[-50:],
             "stats": compute_stats(broker),
             "threshold": config.state.confidence_threshold,
+            "exit_mode": config.state.exit_mode,
         }
 
     @app.get("/stats")
@@ -169,6 +174,13 @@ def register_routes(app: FastAPI) -> None:
     async def set_threshold(req: ThresholdRequest):
         config.state.confidence_threshold = max(0.0, min(1.0, req.threshold))
         return {"threshold": config.state.confidence_threshold}
+
+    @app.post("/exit-mode")
+    async def set_exit_mode(req: ExitModeRequest):
+        if req.exit_mode not in ("dynamic", "static"):
+            raise HTTPException(status_code=400, detail='exit_mode must be "dynamic" or "static"')
+        config.state.exit_mode = req.exit_mode
+        return {"exit_mode": config.state.exit_mode}
 
     @app.post("/backtest/run")
     async def backtest_run(req: BacktestRequest):

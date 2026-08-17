@@ -261,6 +261,10 @@ COOLDOWN_BARS = 12  # bars since last exit on ENTRY_TIMEFRAME (15m -> 3h)
 BE_OFFSET_PCT = 0.25          # V109 beOffsetPct — global, not per-pair
 EARLY_BE_TRIGGER_PCT = 0.90   # V109: move to BE once 90% of the way to TP1
 
+# Exit-management mode itself lives on the mutable `state` object below
+# (config.state.exit_mode), not as a static constant here -- see
+# EngineState's own field comment for why.
+
 
 # ---------------------------------------------------------------------------
 # Sessions (UTC) + per-session dominant currencies
@@ -367,6 +371,16 @@ class EngineState:
     # entry.py reads this instead of the BASE_CONFIDENCE_THRESHOLD constant
     # directly so a live change takes effect without a restart.
     confidence_threshold: float = BASE_CONFIDENCE_THRESHOLD
+    # Runtime-adjustable via POST /exit-mode, same reasoning: needs to be
+    # flippable without a restart so "dynamic" vs "static" exit management
+    # can actually be A/B'd on real live outcomes over a few days each,
+    # per explicit user instruction 2026-08-16. paper_broker.py and
+    # tradesgnl_relay.py both read config.state.exit_mode directly (NOT a
+    # `from config import EXIT_MODE`-style static import, which would bind
+    # the value at import time and never see a later change) so the two
+    # can never silently diverge. "dynamic" or "static" -- see either
+    # module's own comments for what each mode actually does.
+    exit_mode: str = "dynamic"
 
 
 state = EngineState()

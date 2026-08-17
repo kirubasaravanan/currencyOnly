@@ -55,6 +55,21 @@ async def _process_new_closed_trades(now: datetime) -> None:
         _day_trades.append(t)
 
 
+_relayed_partial_ids: set = set()
+
+
+async def _process_partial_takes() -> None:
+    """Detects trades that just flipped partial_taken=True (paper's own
+    50%-at-TP1 mechanic — dynamic EXIT_MODE only). _take_partial() doesn't
+    move a trade into closed_trades the way a full close does, so this
+    can't reuse the closed-trades diff above; needs its own pass over
+    open_positions."""
+    for t in broker.open_positions:
+        if t.get("partial_taken") and t["id"] not in _relayed_partial_ids:
+            _relayed_partial_ids.add(t["id"])
+            await tradesgnl_relay.send_partial_close(t)
+
+
 def _majors_subset(trades: List[Dict]) -> List[Dict]:
     return [t for t in trades if t["symbol"] in MAJORS]
 
@@ -117,6 +132,7 @@ async def _scan_once() -> None:
         return
 
     trade_manager.manage_open_positions(broker, prices, now)
+    await _process_partial_takes()
     await _process_new_closed_trades(now)
     await _check_session_rollover(now)
     await _check_eod_rollover(now)
