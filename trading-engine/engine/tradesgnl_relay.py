@@ -143,6 +143,26 @@ def _wide_tp_price(trade: Dict) -> float:
     return entry + WIDE_TP_MULTIPLIER * (trade["tp2_price"] - entry)
 
 
+def seed_confirmed_ids(open_trades: list) -> None:
+    """[FIX 2026-08-17, discovered live] _confirmed_open_ids/_relayed_partial_ids
+    are plain in-process sets with no persistence -- a process restart (e.g.
+    to deploy an unrelated code change) reset them to empty, which silently
+    broke send_close()/send_partial_close() for every trade that was already
+    open at restart time: their close would hit `if trade["id"] not in
+    _confirmed_open_ids: return` and no-op with zero log output, permanently
+    stranding that position open on the real MT5 account even after the
+    paper trade closed. First caught in production (EURUSD close silently
+    dropped after a restart deployed the exit-alert entry-time change).
+    Call once at orchestrator startup with the paper broker's current
+    open_positions -- anything already open is assumed to have gone through
+    send_entry() at some point, so its close/partial should be allowed to
+    relay again."""
+    for t in open_trades:
+        _confirmed_open_ids.add(t["id"])
+        if t.get("partial_taken"):
+            _relayed_partial_ids.add(t["id"])
+
+
 async def send_entry(trade: Dict) -> None:
     if not TRADESGNL_LICENSE_ID:
         return

@@ -190,6 +190,10 @@ async def _loop() -> None:
 async def start() -> None:
     global _task
     if _task is None or _task.done():
+        # Re-arm the relay's confirmed-sent tracking for whatever's already
+        # open in the paper broker -- otherwise a restart silently strands
+        # those positions' closes/partials (see tradesgnl_relay.seed_confirmed_ids).
+        tradesgnl_relay.seed_confirmed_ids(broker.open_positions)
         _task = asyncio.create_task(_loop())
 
 
