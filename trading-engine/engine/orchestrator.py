@@ -67,7 +67,8 @@ async def _process_partial_takes() -> None:
     for t in broker.open_positions:
         if t.get("partial_taken") and t["id"] not in _relayed_partial_ids:
             _relayed_partial_ids.add(t["id"])
-            await tradesgnl_relay.send_partial_close(t)
+            relayed = await tradesgnl_relay.send_partial_close(t)
+            await discord_alerts.alert_partial_close(t, relayed)
 
 
 def _majors_subset(trades: List[Dict]) -> List[Dict]:

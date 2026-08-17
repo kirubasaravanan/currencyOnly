@@ -191,10 +191,14 @@ async def send_entry(trade: Dict) -> None:
         await discord_alerts.alert_relay_failure(symbol, "entry", command)
 
 
-async def send_partial_close(trade: Dict) -> None:
+async def send_partial_close(trade: Dict) -> bool:
     """Relays the 50%-at-TP1 partial the paper engine just took (see
     paper_broker.py's _take_partial()). Only fires for a trade we confirmed
-    the entry for, and only once per trade.
+    the entry for, and only once per trade. Returns whether it actually
+    sent successfully -- orchestrator.py surfaces this directly to Discord
+    (alert_partial_close) since partial-close relay reliability is
+    something the user explicitly asked to keep watching after the
+    2026-08-17 GBPJPY incident (see below).
 
     [FIX 2026-08-17, found live] Previously sent a made-up "closelongvol"/
     "closeshortvol,vol_lots=X" command -- TradeSgnl rejected it outright
@@ -207,11 +211,11 @@ async def send_partial_close(trade: Dict) -> None:
     "TradeSgnl's documented parameter is pct=, not pct_percent="), just
     never exercised there since that script pins is_xau false."""
     if not TRADESGNL_LICENSE_ID:
-        return
+        return False
     if trade["id"] not in _confirmed_open_ids:
-        return
+        return False
     if trade["id"] in _relayed_partial_ids:
-        return
+        return False
     _relayed_partial_ids.add(trade["id"])
     symbol = trade["symbol"]
     is_long = trade["side"] in ("BUY", "BULLISH")
@@ -221,10 +225,7 @@ async def send_partial_close(trade: Dict) -> None:
         f"pct=0.5,"
         f"comment={_comment_id(symbol, trade['side'])}"
     )
-    sent = await asyncio.to_thread(_send_sync, command)
-    if not sent:
-        from engine import discord_alerts
-        await discord_alerts.alert_relay_failure(symbol, "partial_close", command)
+    return await asyncio.to_thread(_send_sync, command)
 
 
 async def send_close(trade: Dict) -> None:

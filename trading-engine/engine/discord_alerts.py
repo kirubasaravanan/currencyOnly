@@ -101,6 +101,27 @@ async def alert_trade_closed(trade: Dict) -> None:
     await _send_embed(embed)
 
 
+async def alert_partial_close(trade: Dict, relayed: bool) -> None:
+    """[ADD 2026-08-17, explicit user instruction: "update me if... partial
+    close is happening or not"] Distinct from alert_trade_closed -- fires
+    the moment paper's 50%-at-TP1 partial takes, not at the trade's
+    eventual full close, so the pct=0.5 fix's success/failure is visible
+    trade-by-trade rather than only inferable from the log or a silent
+    TradeSgnl email (see tradesgnl_relay.py's 2026-08-17 fix note)."""
+    status = "✅ relayed to real MT5" if relayed else "❌ relay FAILED — real position still at original size"
+    embed = {
+        "title": f"📊 {trade['symbol']} PARTIAL CLOSE (50% @ TP1)",
+        "color": GREEN if relayed else RED,
+        "fields": [
+            {"name": "Lots closed", "value": f"{trade.get('original_lots', 0) - trade.get('lots', 0):.2f}", "inline": True},
+            {"name": "Remaining lots", "value": f"{trade.get('lots', 0):.2f}", "inline": True},
+            {"name": "Partial P&L (net)", "value": f"${trade.get('partial_pnl_net', 0):.2f}", "inline": True},
+            {"name": "Real MT5 relay", "value": status, "inline": False},
+        ],
+    }
+    await _send_embed(embed)
+
+
 async def alert_relay_failure(symbol: str, kind: str, command: str) -> None:
     """[ADD 2026-08-17, found live] tradesgnl_relay.py's _send_sync() only
     ever printed a failed webhook response to the log file -- nothing
