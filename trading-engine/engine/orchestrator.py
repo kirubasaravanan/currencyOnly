@@ -41,6 +41,20 @@ def _ist_date_str(now: datetime) -> str:
     return (now + IST_OFFSET).date().isoformat()
 
 
+def _ist_minutes_of_day(now: datetime) -> int:
+    ist = now.astimezone(timezone.utc) + IST_OFFSET
+    return ist.hour * 60 + ist.minute
+
+
+# [CHANGED 2026-08-17, explicit user instruction] Was triggered by the IST
+# calendar date rolling over (~00:00 IST) -- a ~4h gap after every pair's
+# own last session window has already closed (the latest is AUDJPY at
+# 20:00 IST). Moved to fire shortly after the whole day's trading is
+# actually done instead of waiting for midnight.
+EOD_TRIGGER_MINUTES = 20 * 60 + 5  # 20:05 IST
+_last_eod_date: Optional[str] = None
+
+
 async def _process_new_closed_trades(now: datetime) -> None:
     """Diffs broker.closed_trades against the last-seen count to find newly
     closed trades since the previous scan, fires exit alerts for each, and
@@ -93,17 +107,23 @@ async def _check_session_rollover(now: datetime) -> None:
 
 
 async def _check_eod_rollover(now: datetime) -> None:
-    global _current_ist_date, _day_trades
+    global _current_ist_date, _day_trades, _last_eod_date
     date_str = _ist_date_str(now)
     if _current_ist_date is None:
         _current_ist_date = date_str
         return
     if date_str != _current_ist_date:
-        dd = _drawdown_pct()
-        await discord_alerts.alert_eod_summary(_current_ist_date, _majors_subset(_day_trades), broker.equity, dd, "MAJORS")
-        await discord_alerts.alert_eod_summary(_current_ist_date, _day_trades, broker.equity, dd, "ALL 17 PAIRS")
+        # New IST calendar day started -- just resets the day-trades bucket
+        # for the day ahead; the actual EOD alert fires below, at 20:05 IST,
+        # not at this midnight boundary.
         _current_ist_date = date_str
         _day_trades = []
+
+    if _ist_minutes_of_day(now) >= EOD_TRIGGER_MINUTES and _last_eod_date != date_str:
+        dd = _drawdown_pct()
+        await discord_alerts.alert_eod_summary(date_str, _majors_subset(_day_trades), broker.equity, dd, "MAJORS")
+        await discord_alerts.alert_eod_summary(date_str, _day_trades, broker.equity, dd, "ALL 17 PAIRS")
+        _last_eod_date = date_str
 
 
 def _drawdown_pct() -> float:
