@@ -209,12 +209,21 @@ async def _loop() -> None:
 
 
 async def start() -> None:
-    global _task
+    global _task, _alerted_closed_count
     if _task is None or _task.done():
         # Re-arm the relay's confirmed-sent tracking for whatever's already
         # open in the paper broker -- otherwise a restart silently strands
         # those positions' closes/partials (see tradesgnl_relay.seed_confirmed_ids).
         tradesgnl_relay.seed_confirmed_ids(broker.open_positions)
+        # [FIX 2026-08-17, found live -- user reported Discord spam right
+        # after a restart] broker.closed_trades is loaded from persisted
+        # disk state (up to the last 500 trades) on every startup, but this
+        # counter is a plain in-memory int that resets to 0 -- so right
+        # after a restart, _process_new_closed_trades() saw the ENTIRE
+        # persisted history as "new" and re-fired a Discord close-alert for
+        # every one of them at once. Seeding it to the current length means
+        # only trades that close AFTER this startup count as new.
+        _alerted_closed_count = len(broker.closed_trades)
         _task = asyncio.create_task(_loop())
 
 
