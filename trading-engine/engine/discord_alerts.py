@@ -101,6 +101,41 @@ async def alert_trade_closed(trade: Dict) -> None:
     await _send_embed(embed)
 
 
+async def alert_sync_heartbeat(result: Dict) -> None:
+    """Only called when trade_sync_heartbeat.run_heartbeat() found something
+    worth surfacing (see orchestrator.py's dispatch) -- a clean check never
+    posts anything, so this channel doesn't get a message every 5 minutes."""
+    phantoms = result.get("direction1_confirmed_phantoms", [])
+    still_open = result.get("direction2_still_open_on_real", [])
+    errors = result.get("errors", [])
+
+    fields = []
+    for p in phantoms:
+        fields.append({
+            "name": f"🟠 {p['symbol']} closed on real, still open in paper",
+            "value": f"real P&L ${p['real_pnl']:.2f} @ {p['real_close_time_utc']} (paper still tracking it live)",
+            "inline": False,
+        })
+    for s in still_open:
+        fields.append({
+            "name": f"🔴 {s['symbol']} closed in paper, still open on real (ticket {s['real_ticket']})",
+            "value": f"paper closed {s['paper_closed_at']} ({s['paper_close_reason']}) -- real position live P&L ${s['real_profit']:.2f}, {s['real_volume']} lots",
+            "inline": False,
+        })
+    for e in errors:
+        fields.append({"name": "⚠️ heartbeat check error", "value": e, "inline": False})
+
+    if not fields:
+        return
+
+    embed = {
+        "title": "🔁 Trade sync desync detected",
+        "color": RED,
+        "fields": fields,
+    }
+    await _send_embed(embed)
+
+
 def _aggregate(trades: List[Dict]) -> Dict:
     wins = sum(1 for t in trades if t.get("pnl", 0) > 0)
     losses = len(trades) - wins

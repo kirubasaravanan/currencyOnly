@@ -19,7 +19,7 @@ from typing import Dict, List, Optional
 
 from config import PAIRS, MAJORS, MTF_TIMEFRAMES, ENGINE_LOOP_SECONDS, state
 from data.market_data import market_data
-from engine import risk, correlation, trade_manager, currency_strength, discord_alerts, tradesgnl_relay
+from engine import risk, correlation, trade_manager, currency_strength, discord_alerts, tradesgnl_relay, trade_sync_heartbeat
 from engine.entry import entry_signal
 from engine.paper_broker import broker
 from engine.session_dominance import current_session
@@ -111,6 +111,26 @@ def _drawdown_pct() -> float:
     return round(((broker.peak_equity - broker.equity) / broker.peak_equity) * 100.0, 2)
 
 
+_last_heartbeat_at = 0.0
+
+
+async def _check_sync_heartbeat() -> None:
+    """Own cadence, separate from the 60s scan loop -- MT5 reads are
+    blocking, so this runs in a thread and only every few minutes, not
+    every scan. See trade_sync_heartbeat.py for what this actually checks
+    and why (explicit user request, 2026-08-17: "keep monitoring and let
+    me know if anything else desyncs")."""
+    global _last_heartbeat_at
+    now_ts = datetime.now(timezone.utc).timestamp()
+    if now_ts - _last_heartbeat_at < trade_sync_heartbeat.HEARTBEAT_INTERVAL_SECONDS:
+        return
+    _last_heartbeat_at = now_ts
+    result = await asyncio.to_thread(trade_sync_heartbeat.run_heartbeat)
+    if result.get("disabled"):
+        return
+    await discord_alerts.alert_sync_heartbeat(result)
+
+
 async def _scan_once() -> None:
     global last_error
     now = datetime.now(timezone.utc)
@@ -136,6 +156,7 @@ async def _scan_once() -> None:
     await _process_new_closed_trades(now)
     await _check_session_rollover(now)
     await _check_eod_rollover(now)
+    await _check_sync_heartbeat()
 
     ranking = currency_strength.compute_ranking({s: f.get("1h") for s, f in frames_by_symbol.items()})
 
