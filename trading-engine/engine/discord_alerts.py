@@ -101,6 +101,21 @@ async def alert_trade_closed(trade: Dict) -> None:
     await _send_embed(embed)
 
 
+async def alert_relay_failure(symbol: str, kind: str, command: str) -> None:
+    """[ADD 2026-08-17, found live] tradesgnl_relay.py's _send_sync() only
+    ever printed a failed webhook response to the log file -- nothing
+    surfaced to Discord. A GBPJPY partial-close silently failed (TradeSgnl
+    rejected an invalid command) and went unnoticed for ~90 minutes, found
+    only because the user happened to check a TradeSgnl email directly.
+    Every relay call now routes its failure here instead of staying log-only."""
+    embed = {
+        "title": f"🔴 Real MT5 relay send failed — {symbol} ({kind})",
+        "color": RED,
+        "fields": [{"name": "Command sent", "value": command, "inline": False}],
+    }
+    await _send_embed(embed)
+
+
 async def alert_sync_heartbeat(result: Dict) -> None:
     """Only called when trade_sync_heartbeat.run_heartbeat() found something
     worth surfacing (see orchestrator.py's dispatch) -- a clean check never

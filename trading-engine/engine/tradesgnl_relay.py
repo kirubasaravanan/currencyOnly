@@ -186,14 +186,26 @@ async def send_entry(trade: Dict) -> None:
     sent = await asyncio.to_thread(_send_sync, command)
     if sent:
         _confirmed_open_ids.add(trade["id"])
+    else:
+        from engine import discord_alerts
+        await discord_alerts.alert_relay_failure(symbol, "entry", command)
 
 
 async def send_partial_close(trade: Dict) -> None:
     """Relays the 50%-at-TP1 partial the paper engine just took (see
-    paper_broker.py's _take_partial()). Uses the closelongvol/closeshortvol
-    command grammar documented in the user's own V109 script's partial-
-    close alert code. Only fires for a trade we confirmed the entry for,
-    and only once per trade."""
+    paper_broker.py's _take_partial()). Only fires for a trade we confirmed
+    the entry for, and only once per trade.
+
+    [FIX 2026-08-17, found live] Previously sent a made-up "closelongvol"/
+    "closeshortvol,vol_lots=X" command -- TradeSgnl rejected it outright
+    (HTTP 400, error 7002 "Invalid action/command") for GBPJPY, leaving the
+    real position stuck at full size while paper had already scaled to
+    half. That grammar was never real; it was inferred from Pine alert-
+    message wording, not verified. The actual, TradeSgnl-documented partial
+    close reuses the SAME closelong/closeshort verb as a full close, with a
+    pct= parameter -- straight from V109-Currency-Fixed.pine line 1311 (
+    "TradeSgnl's documented parameter is pct=, not pct_percent="), just
+    never exercised there since that script pins is_xau false."""
     if not TRADESGNL_LICENSE_ID:
         return
     if trade["id"] not in _confirmed_open_ids:
@@ -203,16 +215,16 @@ async def send_partial_close(trade: Dict) -> None:
     _relayed_partial_ids.add(trade["id"])
     symbol = trade["symbol"]
     is_long = trade["side"] in ("BUY", "BULLISH")
-    action = "closelongvol" if is_long else "closeshortvol"
-    # Half of the ORIGINAL size -- trade["lots"] has already been reduced
-    # to the remaining half by the time partial_taken flips True.
-    half_lots = trade["lots"]
+    close_action = "closelong" if is_long else "closeshort"
     command = (
-        f"{TRADESGNL_LICENSE_ID},{symbol},{action},"
-        f"vol_lots={half_lots:.2f},"
+        f"{TRADESGNL_LICENSE_ID},{symbol},{close_action},"
+        f"pct=0.5,"
         f"comment={_comment_id(symbol, trade['side'])}"
     )
-    await asyncio.to_thread(_send_sync, command)
+    sent = await asyncio.to_thread(_send_sync, command)
+    if not sent:
+        from engine import discord_alerts
+        await discord_alerts.alert_relay_failure(symbol, "partial_close", command)
 
 
 async def send_close(trade: Dict) -> None:
@@ -226,4 +238,7 @@ async def send_close(trade: Dict) -> None:
     is_long = trade["side"] in ("BUY", "BULLISH")
     close_action = "closelong" if is_long else "closeshort"
     command = f"{TRADESGNL_LICENSE_ID},{symbol},{close_action},comment={_comment_id(symbol, trade['side'])}"
-    await asyncio.to_thread(_send_sync, command)
+    sent = await asyncio.to_thread(_send_sync, command)
+    if not sent:
+        from engine import discord_alerts
+        await discord_alerts.alert_relay_failure(symbol, "close", command)
