@@ -1,8 +1,10 @@
 # currencyOnly — FX-Only Hybrid-Gate Paper Trading Engine
 
-A standalone, FX-pairs-only trading engine — 17 majors/crosses, paper trading only.
+A standalone, FX-pairs-only trading engine — 17 majors/crosses, paper trading by default.
 
-> ⚠️ **This app never places, modifies, or closes a real order anywhere — not even on an OANDA demo/practice account.** OANDA is used strictly as a read-only market-data source (`/v3/instruments/{instrument}/candles`). Every position is simulated entirely in-process. There is deliberately no `OANDA_ACCOUNT_ID` anywhere in this repo — order-placement endpoints require one, so its absence is a structural guarantee, not just a policy. Verify yourself: `grep -rn "requests.post\|httpx.post\|/v3/accounts\|/orders" trading-engine/` should only ever match comments.
+> ⚠️ **OANDA is always read-only.** It's used strictly as a market-data source (`/v3/instruments/{instrument}/candles`) — there is deliberately no `OANDA_ACCOUNT_ID` anywhere in this repo, so OANDA specifically can never place, modify, or close a real order from this app. Every position is otherwise simulated entirely in-process by the paper broker.
+>
+> **[UPDATED 2026-08-16] An optional real-order relay now exists.** `engine/tradesgnl_relay.py`, wired into the live orchestrator only (never the backtester), mirrors every paper entry/exit to a real MT5 account via TradeSgnl — *only when `TRADESGNL_LICENSE_ID` is set in `.env`*. Currently configured against a demo account (login 110875560, MetaQuotes-Demo server, ~$15k), explicitly verified isolated from the sister Forex app's own use of that same license before being wired up — see that module's docstring for the full verification trail. Leave `TRADESGNL_LICENSE_ID` blank to disable this relay entirely and return to pure paper-only, no-order-placement-code behavior. Verify current state yourself: `grep -rn "requests.post\|httpx.post\|/v3/accounts\|/orders" trading-engine/` — any match outside `tradesgnl_relay.py` and its docstrings means something unexpected changed.
 
 ## Why this exists
 
@@ -35,6 +37,8 @@ trading-engine/                Python 3.12, FastAPI (port 8001)
     ├── trade_manager.py         Per-pair session close (shared by live + backtest), cooldown
     ├── backtester.py            Walk-forward replay over real OANDA history
     ├── analytics.py             Win rate/expectancy/profit factor/drawdown, gross-vs-net split
+    ├── discord_alerts.py        Entry/exit/session/EOD alerts — live-only, notification-only
+    ├── tradesgnl_relay.py       OPTIONAL real MT5 relay — live-only, off unless TRADESGNL_LICENSE_ID is set
     └── orchestrator.py          60s live scan loop
 
 src/                            Next.js 16 dashboard (port 3006)
@@ -74,13 +78,11 @@ Open http://localhost:3006.
 
 ## Status (as of this build)
 
-First real backtest (17 pairs, 60 days of live OANDA history): 17 trades, 70.6% win rate, profit factor 1.74, **net +$156.60 after $43.75 commission**. Genuinely promising, but trade frequency is low (~1 trade/pair/2.4 months) — diagnosed to `scripts/gate_diagnostics.py`: Layer 2's weighted-confluence threshold is the dominant bottleneck, not Layer 1's structural gate. The confidence threshold is runtime-adjustable (`POST /threshold`, no restart needed) specifically so this can be tuned against real backtest data rather than guessed. See `scripts/threshold_sweep.py` for a frequency-vs-quality comparison at a few threshold levels.
-
-Every per-pair calibration value in `config.py`'s `PAIR_CALIBRATION` table is a **starting point ported from V109**, not yet independently re-validated — that validation is what the backtester and this observation period are for.
+After fixing two real bugs found via direct data investigation this session — a cooldown-timestamp bug that was capping every pair at exactly 1 trade regardless of gate/confidence logic, and a position-sizing bug that silently mis-sized every non-USD-quoted pair (USDJPY undersized ~150x) — a 60-day/17-pair backtest produces ~500+ trades with a healthy profit factor and a 45-minute pre-close entry cutoff (empirically confirmed to remove structurally-doomed late entries). Every per-pair calibration value in `config.py`'s `PAIR_CALIBRATION` table is still a **starting point ported from V109**, not yet independently re-validated — that validation is what the live observation period is for.
 
 ## Path to real money
 
-Per explicit instruction: **paper only, for now.** No OANDA demo orders, no MT5, no webhook relays of any kind. Once enough paper/backtest data supports it, the next step is a FundedNext challenge account — not before.
+Originally: **paper only.** No OANDA demo orders, no MT5, no webhook relays of any kind. That changed 2026-08-16 by explicit instruction: `engine/tradesgnl_relay.py` now optionally mirrors every paper entry/exit to a real MT5 demo account via TradeSgnl, gated entirely on `TRADESGNL_LICENSE_ID` being set in `.env` — see that module's docstring and the top-of-file warning above for the full verification trail (this license was confirmed isolated from the sister Forex app's own use of it before being wired up). Leave the license unset to stay pure paper-only. The next step after this demo relay proves out is a FundedNext challenge account.
 
 ## License
 

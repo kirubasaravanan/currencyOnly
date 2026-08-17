@@ -1,12 +1,12 @@
 # currencyOnly — Design Document
 
-**Status:** Paper trading only, real OANDA data, zero order-placement code anywhere.
+**Status:** Paper trading by default, real OANDA data (read-only). [UPDATED 2026-08-16] An optional real-order relay to a demo MT5 account now exists (`engine/tradesgnl_relay.py`), off unless `TRADESGNL_LICENSE_ID` is set in `.env` — see README.md's top-of-file warning for the full verification trail before assuming this is still paper-only in any given deployment.
 
 ## 1. Why a separate app, not a change to Forex/Forex
 
 `Forex/Forex` trades XAUUSD live with real money across 6 relayed accounts, sharing one confluence engine with its FX pairs. Two problems with extending that app instead of building fresh:
 
-1. **Blast radius.** Any bug in a shared engine risks the live gold accounts. A standalone repo makes that structurally impossible — this app doesn't import from, deploy alongside, or share any credential scope with the live one beyond reading the same OANDA data token.
+1. **Blast radius.** Any bug in a shared engine risks the live gold accounts. A standalone repo makes that structurally impossible — this app doesn't import from or deploy alongside the live one. It does now share two credential scopes deliberately, not accidentally: the same OANDA data token (read-only, both apps), and — since 2026-08-16 — the same TradeSgnl license for a demo account, explicitly verified isolated from the Forex app's own real-account use of that license before being reused here (see `engine/tradesgnl_relay.py`'s docstring for the verification trail).
 2. **FX needed different logic, not the same logic retuned.** The user's V109 TradingView strategy (liquidity sweep, market-structure-shift, per-pair session windows, ADR-exhaustion scaling, profit-based trailing) was never fully ported into the live engine's 10-factor confluence scorer — they're genuinely different entry philosophies. Bolting V109 onto the live engine's `entry.py` would have meant either replacing gold's working logic or forking the file — a separate app is cleaner than either.
 
 ## 2. The hybrid gate

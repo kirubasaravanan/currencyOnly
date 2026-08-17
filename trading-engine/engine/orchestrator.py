@@ -3,9 +3,12 @@ checks -> paper broker -> trade management. Deliberately mirrors the
 backtester's per-bar logic (same entry_signal/risk/correlation/
 trade_manager calls) so live and backtest can't silently diverge.
 
-Also fires Discord alerts (entry, exit, session summary, EOD summary) —
-live-only, since this module (unlike paper_broker.py) is never touched by
-the backtester, a historical replay can never trigger a fake alert.
+Also fires Discord alerts (entry, exit, session summary, EOD summary) and,
+if TRADESGNL_LICENSE_ID is configured in .env, relays every paper entry/
+exit to a real MT5 account via TradeSgnl (engine/tradesgnl_relay.py) —
+both live-only, since this module (unlike paper_broker.py) is never
+touched by the backtester, so a historical replay can never trigger a
+fake alert or a real order.
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from typing import Dict, List, Optional
 
 from config import PAIRS, MAJORS, MTF_TIMEFRAMES, ENGINE_LOOP_SECONDS, state
 from data.market_data import market_data
-from engine import risk, correlation, trade_manager, currency_strength, discord_alerts
+from engine import risk, correlation, trade_manager, currency_strength, discord_alerts, tradesgnl_relay
 from engine.entry import entry_signal
 from engine.paper_broker import broker
 from engine.session_dominance import current_session
@@ -47,6 +50,7 @@ async def _process_new_closed_trades(now: datetime) -> None:
     _alerted_closed_count = len(broker.closed_trades)
     for t in new_trades:
         await discord_alerts.alert_trade_closed(t)
+        await tradesgnl_relay.send_close(t)
         _session_trades.append(t)
         _day_trades.append(t)
 
@@ -148,6 +152,7 @@ async def _scan_once() -> None:
         trade = broker.open_trade(signal, sizing["lots"])
         if trade is not None:
             await discord_alerts.alert_trade_opened(trade)
+            await tradesgnl_relay.send_entry(trade)
         open_symbols.add(symbol)
 
 
