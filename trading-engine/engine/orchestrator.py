@@ -14,6 +14,8 @@ fake alert or a real order.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
@@ -89,14 +91,38 @@ async def _process_new_closed_trades(now: datetime) -> None:
 # Recomputed fresh from _day_trades every scan rather than maintained as a
 # separately-seeded running variable -- _day_trades is already correctly
 # seeded/reset elsewhere (see start() and _check_eod_rollover), so
-# replaying it each time is both simpler and automatically restart-safe:
-# if this should already have triggered based on trades that closed
-# before a same-day restart, the very next scan re-detects that and
-# re-arms the entry-blocking flag for the rest of the day (any positions
-# already relay-closed before the restart just won't appear in
-# broker.open_positions anymore, so the "close" loop below is a no-op for
-# them -- harmless).
+# replaying it each time mostly self-heals across a same-day restart: if
+# this should already have triggered based on trades that closed before
+# the restart, the next scan re-detects that and re-arms the flag.
+#
+# [FIX 2026-08-18, found live] That self-healing has a real gap though:
+# it depends on peak/current STILL crossing the threshold at the moment of
+# the post-restart recompute. If P&L partially recovers between the
+# original trigger and a later restart (e.g. a subsequent trade brings
+# `current` back above 75% of `peak`), the recompute-and-check finds
+# nothing to trigger on and _giveback_triggered_date stays unset -- silently
+# re-permitting entries for the rest of a day that had already breached the
+# limit, contradicting the rule's own "entries paused for today" intent.
+# Persisting the triggered date to disk (once actually set) closes this --
+# a restart now restores the flag directly instead of re-deriving it from
+# P&L that may have moved on.
 _giveback_triggered_date: Optional[str] = None
+_GIVEBACK_STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "storage", "giveback_state.json")
+
+
+def _load_giveback_triggered_date() -> Optional[str]:
+    try:
+        with open(os.path.abspath(_GIVEBACK_STATE_FILE)) as f:
+            return json.load(f).get("triggered_date")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _save_giveback_triggered_date(date_str: str) -> None:
+    path = os.path.abspath(_GIVEBACK_STATE_FILE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump({"triggered_date": date_str}, f)
 
 
 async def _check_daily_giveback_breaker() -> None:
@@ -118,6 +144,7 @@ async def _check_daily_giveback_breaker() -> None:
         return
 
     _giveback_triggered_date = _current_ist_date
+    _save_giveback_triggered_date(_current_ist_date)
     closed_symbols: List[str] = []
     for t in list(broker.open_positions):
         sent = await tradesgnl_relay.send_close(t)
@@ -391,11 +418,22 @@ async def start() -> None:
         # start-of-day status message (if already past 05:25 IST) or
         # re-fire a risk-limit-breach alert for a problem that was already
         # reported before the restart.
-        global _last_sod_date, _last_risk_block_reason
+        global _last_sod_date, _last_risk_block_reason, _last_eod_date, _giveback_triggered_date
         if _ist_minutes_of_day(now) >= SOD_TRIGGER_MINUTES:
             _last_sod_date = _ist_date_str(now)
+        # [FIX 2026-08-18, found live -- user reported the EOD summary firing
+        # again after a restart] Unlike _last_sod_date just above, this had
+        # no restart seeding at all -- any restart after 20:05 IST left
+        # _last_eod_date as None, so the next scan's _check_eod_rollover saw
+        # "not sent today" and re-fired the EOD Discord summary, duplicating
+        # it. Same fix as SOD: if we're already past the trigger time for
+        # today, treat today as already covered.
+        if _ist_minutes_of_day(now) >= EOD_TRIGGER_MINUTES:
+            _last_eod_date = _ist_date_str(now)
         startup_risk_check = risk.can_open_new_trade(broker.open_positions, broker.closed_trades, broker.equity, broker.peak_equity)
         _last_risk_block_reason = startup_risk_check.get("reason") if not startup_risk_check["allowed"] else None
+
+        _giveback_triggered_date = _load_giveback_triggered_date()
 
         _task = asyncio.create_task(_loop())
 
