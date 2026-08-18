@@ -142,10 +142,17 @@ async def alert_sync_heartbeat(result: Dict) -> None:
     worth surfacing (see orchestrator.py's dispatch) -- a clean check never
     posts anything, so this channel doesn't get a message every 5 minutes."""
     phantoms = result.get("direction1_confirmed_phantoms", [])
+    uncertain = result.get("direction1_uncertain", [])
     still_open = result.get("direction2_still_open_on_real", [])
     errors = result.get("errors", [])
 
     fields = []
+    for u in uncertain:
+        fields.append({
+            "name": f"🟡 {u['symbol']} may be desynced (paper open, can't confirm real side)",
+            "value": f"unresolved for {u['consecutive_checks']} consecutive checks (~{u['consecutive_checks']*5}min) -- reason: {u['reason']}, paper P&L ${u.get('internal_pnl', 0):.2f}",
+            "inline": False,
+        })
     for p in phantoms:
         fields.append({
             "name": f"🟠 {p['symbol']} closed on real, still open in paper",

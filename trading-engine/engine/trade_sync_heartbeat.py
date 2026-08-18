@@ -64,6 +64,20 @@ DIRECTION2_REALERT_SECONDS = 60 * 60
 _last_unreachable_at: Optional[float] = None
 _direction2_last_alerted: Dict[int, float] = {}  # real_ticket -> ts
 
+# [ADD 2026-08-18, found live] direction1_uncertain findings were computed
+# but never actually surfaced anywhere -- discord_alerts.alert_sync_heartbeat
+# only ever read confirmed_phantoms/still_open_on_real/errors. A real
+# desync (AUDUSD: real MT5 hit its native SL ~3h before paper's own SL
+# check caught up) sat silently the entire time with zero Discord signal,
+# discovered only because the user asked directly. A single "uncertain"
+# reading is expected noise (grace period, a transient MT5 read hiccup) and
+# shouldn't page anyone -- but one that PERSISTS across multiple consecutive
+# checks is exactly the kind of "actually might be broken" signal this
+# heartbeat exists to catch. Tracks a streak per trade id; only surfaced
+# once it's been uncertain for UNCERTAIN_ALERT_STREAK consecutive checks.
+UNCERTAIN_ALERT_STREAK = 3  # 3 x 5min cadence = ~15 minutes of persistence
+_uncertain_streak: Dict[int, int] = {}  # trade_id -> consecutive uncertain count
+
 
 def _in_grace_period() -> bool:
     return _last_unreachable_at is not None and (time.time() - _last_unreachable_at) < GRACE_PERIOD_SECONDS
@@ -168,6 +182,7 @@ def _check() -> Dict:
         }
 
         # --- Direction 1: paper open, real not open ---
+        still_uncertain_ids = set()
         for t in list(broker.open_positions):
             symbol = t.get("symbol")
             side = t.get("side", "")
@@ -185,19 +200,34 @@ def _check() -> Dict:
 
             deal = _find_closing_deal(mt5, symbol, tag, opened_at)
             if deal is None or in_grace:
-                result["direction1_uncertain"].append({
-                    "symbol": symbol, "side": side,
-                    "internal_pnl": t.get("pnl"),
-                    "reason": "in_grace_period" if in_grace else "no_matching_closing_deal_found",
-                })
+                still_uncertain_ids.add(t["id"])
+                streak = _uncertain_streak.get(t["id"], 0) + 1
+                _uncertain_streak[t["id"]] = streak
+                if streak >= UNCERTAIN_ALERT_STREAK:
+                    result["direction1_uncertain"].append({
+                        "symbol": symbol, "side": side,
+                        "internal_pnl": t.get("pnl"),
+                        "reason": "in_grace_period" if in_grace else "no_matching_closing_deal_found",
+                        "consecutive_checks": streak,
+                    })
                 continue
 
+            _uncertain_streak.pop(t["id"], None)
             result["direction1_confirmed_phantoms"].append({
                 "trade_id": t["id"], "symbol": symbol, "side": side,
                 "internal_pnl": t.get("pnl"),
                 "real_exit_price": deal.price, "real_pnl": round(deal.profit, 2),
                 "real_close_time_utc": _to_true_utc(deal.time).isoformat(),
             })
+
+        # Clear streaks for any trade that's no longer open (closed, either
+        # genuinely on both sides or via the confirmed-phantom path above)
+        # or has resolved back to genuinely-open-on-both -- otherwise a
+        # stale streak could immediately re-trigger an alert for a
+        # DIFFERENT, unrelated later trade that happens to reuse the same id.
+        for stale_id in list(_uncertain_streak):
+            if stale_id not in still_uncertain_ids:
+                _uncertain_streak.pop(stale_id, None)
 
         # --- Direction 2: paper closed (recently), real still open ---
         if not in_grace:
