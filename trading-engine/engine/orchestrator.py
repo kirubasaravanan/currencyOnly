@@ -132,6 +132,41 @@ def _drawdown_pct() -> float:
     return round(((broker.peak_equity - broker.equity) / broker.peak_equity) * 100.0, 2)
 
 
+# [ADD 2026-08-18, explicit user instruction] Tracks the currently-alerted
+# risk-block reason so a breach only alerts on the TRANSITION into that
+# state (not every 60s scan while it stays blocked), and clears once
+# trading is allowed again so a future re-breach can alert fresh.
+_last_risk_block_reason: Optional[str] = None
+
+
+async def _check_risk_limit_alert(risk_check: Dict) -> None:
+    global _last_risk_block_reason
+    reason = risk_check.get("reason") if not risk_check["allowed"] else None
+    if reason == _last_risk_block_reason:
+        return
+    _last_risk_block_reason = reason
+    if reason is not None:
+        await discord_alerts.alert_risk_limit_breached(reason, broker.equity, broker.peak_equity, _drawdown_pct())
+
+
+# [ADD 2026-08-18, explicit user instruction: "a start of the day message
+# kind of"] Daily status ping independent of whether anything is actually
+# breached -- fires once, shortly before the earliest pair's session opens
+# (05:30 IST), so risk-limit standing is visible proactively every day
+# rather than only reactively when something trips.
+SOD_TRIGGER_MINUTES = 5 * 60 + 25  # 05:25 IST
+_last_sod_date: Optional[str] = None
+
+
+async def _check_sod_status(now: datetime) -> None:
+    global _last_sod_date
+    date_str = _ist_date_str(now)
+    minutes = _ist_minutes_of_day(now)
+    if minutes >= SOD_TRIGGER_MINUTES and _last_sod_date != date_str:
+        _last_sod_date = date_str
+        await discord_alerts.alert_sod_status(date_str, broker.equity, broker.peak_equity, _drawdown_pct())
+
+
 _last_heartbeat_at = 0.0
 
 
@@ -177,19 +212,31 @@ async def _scan_once() -> None:
     await _process_new_closed_trades(now)
     await _check_session_rollover(now)
     await _check_eod_rollover(now)
+    await _check_sod_status(now)
     await _check_sync_heartbeat()
 
     ranking = currency_strength.compute_ranking({s: f.get("1h") for s, f in frames_by_symbol.items()})
 
+    # [FIX 2026-08-18, explicit user instruction -- found the same silent-
+    # circuit-breaker gap the sister Forex app had, fixed there the day
+    # before] can_open_new_trade() (max_open_trades/max_drawdown/daily_loss_
+    # limit/weekly_loss_limit) was being called once per candidate symbol,
+    # every scan, and its result silently discarded via `continue` -- no
+    # log line, no Discord alert, nothing. Once tripped, new entries simply
+    # stopped with zero visible explanation. Hoisted to a single account-
+    # wide check per scan (the inputs never varied by symbol anyway) and
+    # wired to alert_risk_limit_breached() on transition into a blocked
+    # state (see _check_risk_limit_alert below).
+    risk_check = risk.can_open_new_trade(broker.open_positions, broker.closed_trades, broker.equity, broker.peak_equity)
+    await _check_risk_limit_alert(risk_check)
+
     open_symbols = {t["symbol"] for t in broker.open_positions}
     for symbol, frames in frames_by_symbol.items():
+        if not risk_check["allowed"]:
+            break
         if symbol in open_symbols or symbol not in prices:
             continue
         if trade_manager.in_cooldown(symbol, now, broker.closed_trades):
-            continue
-
-        risk_check = risk.can_open_new_trade(broker.open_positions, broker.closed_trades, broker.equity, broker.peak_equity)
-        if not risk_check["allowed"]:
             continue
 
         try:
@@ -273,6 +320,19 @@ async def start() -> None:
                 t for t in broker.closed_trades
                 if t.get("closed_at") and datetime.fromisoformat(t["closed_at"]) >= session_start
             ]
+
+        # [FIX 2026-08-18, pre-empting the same restart-persistence bug
+        # found three times already today] Both new trackers below are
+        # plain in-memory state, same as everything fixed above -- without
+        # seeding them, a same-day restart would either replay a duplicate
+        # start-of-day status message (if already past 05:25 IST) or
+        # re-fire a risk-limit-breach alert for a problem that was already
+        # reported before the restart.
+        global _last_sod_date, _last_risk_block_reason
+        if _ist_minutes_of_day(now) >= SOD_TRIGGER_MINUTES:
+            _last_sod_date = _ist_date_str(now)
+        startup_risk_check = risk.can_open_new_trade(broker.open_positions, broker.closed_trades, broker.equity, broker.peak_equity)
+        _last_risk_block_reason = startup_risk_check.get("reason") if not startup_risk_check["allowed"] else None
 
         _task = asyncio.create_task(_loop())
 

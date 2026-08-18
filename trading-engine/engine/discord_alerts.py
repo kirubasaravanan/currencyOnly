@@ -16,6 +16,8 @@ from typing import Dict, List, Optional
 import requests
 from dotenv import load_dotenv
 
+import config
+
 load_dotenv()
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 
@@ -237,3 +239,54 @@ async def alert_eod_summary(date_str: str, trades: List[Dict], equity: float, dr
 
 async def alert_engine_event(title: str, description: str = "", color: int = BLUE) -> None:
     await _send_embed({"title": title, "description": description, "color": color})
+
+
+_RISK_REASON_LABELS = {
+    "max_open_trades": f"Max open trades reached ({config.MAX_OPEN_TRADES})",
+    "max_drawdown": f"Max drawdown reached ({config.MAX_DRAWDOWN_PCT}%)",
+    "daily_loss_limit": f"Daily loss limit reached ({config.DAILY_LOSS_LIMIT}% of equity)",
+    "weekly_loss_limit": f"Weekly loss limit reached ({config.WEEKLY_LOSS_LIMIT}% of equity)",
+}
+
+
+async def alert_risk_limit_breached(reason: str, equity: float, peak_equity: float, drawdown_pct: float) -> None:
+    """[ADD 2026-08-18, explicit user instruction] can_open_new_trade()'s
+    block reason was previously discarded silently every scan -- no log,
+    no Discord alert -- same gap already found and fixed in the sister
+    Forex app the day before. New entries would simply stop with zero
+    visible explanation. orchestrator._check_risk_limit_alert() calls this
+    once on the transition INTO a blocked state (not every scan while it
+    stays blocked)."""
+    label = _RISK_REASON_LABELS.get(reason, reason)
+    embed = {
+        "title": f"🛑 New entries paused — {label}",
+        "color": RED,
+        "fields": [
+            {"name": "Equity", "value": f"${equity:.2f}", "inline": True},
+            {"name": "Peak equity", "value": f"${peak_equity:.2f}", "inline": True},
+            {"name": "Drawdown", "value": f"{drawdown_pct:.2f}%", "inline": True},
+        ],
+        "description": "Existing open positions are unaffected -- this only blocks new entries until the limit clears.",
+    }
+    await _send_embed(embed)
+
+
+async def alert_sod_status(date_str: str, equity: float, peak_equity: float, drawdown_pct: float) -> None:
+    """[ADD 2026-08-18, explicit user instruction: "a start of the day
+    message kind of"] Proactive daily status ping, independent of whether
+    anything is actually breached -- fires once, shortly before the
+    earliest pair's session opens (05:25 IST), so risk-limit standing is
+    visible every day rather than only reactively when something trips."""
+    embed = {
+        "title": f"☀️ START OF DAY — {date_str}",
+        "color": BLUE,
+        "fields": [
+            {"name": "Equity", "value": f"${equity:.2f}", "inline": True},
+            {"name": "Peak equity", "value": f"${peak_equity:.2f}", "inline": True},
+            {"name": "Drawdown", "value": f"{drawdown_pct:.2f}%", "inline": True},
+            {"name": "Daily loss limit", "value": f"{config.DAILY_LOSS_LIMIT}% of equity", "inline": True},
+            {"name": "Weekly loss limit", "value": f"{config.WEEKLY_LOSS_LIMIT}% of equity", "inline": True},
+            {"name": "Max drawdown limit", "value": f"{config.MAX_DRAWDOWN_PCT}%", "inline": True},
+        ],
+    }
+    await _send_embed(embed)
