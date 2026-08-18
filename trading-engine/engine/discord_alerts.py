@@ -181,6 +181,27 @@ async def alert_sync_heartbeat(result: Dict) -> None:
     await _send_embed(embed)
 
 
+async def alert_daily_giveback_triggered(peak: float, current: float, closed_symbols: List[str]) -> None:
+    """[ADD 2026-08-18, explicit user instruction, calibrated on a real
+    60-day backtest] Fires once, the moment orchestrator's daily give-back
+    breaker actually trips -- see config.DAILY_GIVEBACK_MIN_PEAK/_PCT for
+    the threshold and its evidence basis."""
+    giveback = peak - current
+    giveback_pct = (giveback / peak * 100) if peak > 0 else 0
+    embed = {
+        "title": "🛑 DAILY GIVE-BACK LIMIT HIT — closing all positions, entries paused for today",
+        "color": RED,
+        "fields": [
+            {"name": "Today's peak P&L", "value": f"${peak:.2f}", "inline": True},
+            {"name": "P&L when triggered", "value": f"${current:.2f}", "inline": True},
+            {"name": "Given back", "value": f"${giveback:.2f} ({giveback_pct:.1f}%)", "inline": True},
+            {"name": "Positions force-closed", "value": ", ".join(closed_symbols) if closed_symbols else "none were open", "inline": False},
+        ],
+        "description": f"Threshold: {config.DAILY_GIVEBACK_PCT}% given back from a peak of at least ${config.DAILY_GIVEBACK_MIN_PEAK:.0f}. New entries resume next trading day.",
+    }
+    await _send_embed(embed)
+
+
 def _aggregate(trades: List[Dict]) -> Dict:
     wins = sum(1 for t in trades if t.get("pnl", 0) > 0)
     losses = len(trades) - wins

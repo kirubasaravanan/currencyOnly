@@ -228,11 +228,15 @@ async def send_partial_close(trade: Dict) -> bool:
     return await asyncio.to_thread(_send_sync, command)
 
 
-async def send_close(trade: Dict) -> None:
+async def send_close(trade: Dict) -> bool:
+    """Returns whether it actually sent successfully -- callers that need
+    to know (e.g. orchestrator's daily give-back breaker, which reports
+    exactly which symbols got closed on the real side) can check this
+    instead of assuming success."""
     if not TRADESGNL_LICENSE_ID:
-        return
+        return False
     if trade["id"] not in _confirmed_open_ids:
-        return  # entry was never confirmed-sent -- nothing real to close
+        return False  # entry was never confirmed-sent -- nothing real to close
     _confirmed_open_ids.discard(trade["id"])
     _relayed_partial_ids.discard(trade["id"])
     symbol = trade["symbol"]
@@ -243,3 +247,4 @@ async def send_close(trade: Dict) -> None:
     if not sent:
         from engine import discord_alerts
         await discord_alerts.alert_relay_failure(symbol, "close", command)
+    return sent

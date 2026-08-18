@@ -17,6 +17,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
+import config
 from config import PAIRS, MAJORS, MTF_TIMEFRAMES, ENGINE_LOOP_SECONDS, SESSIONS_UTC, state
 from data.market_data import market_data
 from engine import risk, correlation, trade_manager, currency_strength, discord_alerts, tradesgnl_relay, trade_sync_heartbeat
@@ -67,6 +68,62 @@ async def _process_new_closed_trades(now: datetime) -> None:
         await tradesgnl_relay.send_close(t)
         _session_trades.append(t)
         _day_trades.append(t)
+
+
+# [ADD 2026-08-18, explicit user instruction, calibrated on a real 60-day
+# backtest -- see config.DAILY_GIVEBACK_MIN_PEAK/_PCT for the evidence]
+# Daily give-back circuit breaker -- REAL SIDE ONLY, by explicit user
+# instruction: "paper trade will also will happen as usual only tradesgnl
+# should be blocked". Paper's own trades, P&L, and signal generation are
+# completely untouched by this -- it stays a clean, continuous research
+# baseline. Once triggered, this only (a) sends an explicit real close for
+# every currently-open position (paper keeps tracking that same position
+# as open and continues managing it via its own normal SL/TP/trailing
+# logic, same as if this breaker didn't exist) and (b) suppresses
+# send_entry() for any new paper trades opened for the rest of the day
+# (see the entry block in _scan_once). Existing tradesgnl_relay bookkeeping
+# already makes this safe: send_close() discards the trade id from
+# _confirmed_open_ids once relayed, so paper's own later close of the same
+# trade correctly no-ops on the relay side instead of double-closing.
+#
+# Recomputed fresh from _day_trades every scan rather than maintained as a
+# separately-seeded running variable -- _day_trades is already correctly
+# seeded/reset elsewhere (see start() and _check_eod_rollover), so
+# replaying it each time is both simpler and automatically restart-safe:
+# if this should already have triggered based on trades that closed
+# before a same-day restart, the very next scan re-detects that and
+# re-arms the entry-blocking flag for the rest of the day (any positions
+# already relay-closed before the restart just won't appear in
+# broker.open_positions anymore, so the "close" loop below is a no-op for
+# them -- harmless).
+_giveback_triggered_date: Optional[str] = None
+
+
+async def _check_daily_giveback_breaker() -> None:
+    global _giveback_triggered_date
+    if _giveback_triggered_date == _current_ist_date:
+        return
+
+    trades_sorted = sorted(_day_trades, key=lambda t: t["closed_at"])
+    running = 0.0
+    peak = 0.0
+    for t in trades_sorted:
+        running += t.get("pnl", 0.0)
+        peak = max(peak, running)
+    current = running
+
+    if peak < config.DAILY_GIVEBACK_MIN_PEAK:
+        return
+    if current > peak * (1 - config.DAILY_GIVEBACK_PCT / 100.0):
+        return
+
+    _giveback_triggered_date = _current_ist_date
+    closed_symbols: List[str] = []
+    for t in list(broker.open_positions):
+        sent = await tradesgnl_relay.send_close(t)
+        if sent:
+            closed_symbols.append(t["symbol"])
+    await discord_alerts.alert_daily_giveback_triggered(peak, current, closed_symbols)
 
 
 _relayed_partial_ids: set = set()
@@ -210,6 +267,7 @@ async def _scan_once() -> None:
     trade_manager.manage_open_positions(broker, prices, now)
     await _process_partial_takes()
     await _process_new_closed_trades(now)
+    await _check_daily_giveback_breaker()
     await _check_session_rollover(now)
     await _check_eod_rollover(now)
     await _check_sod_status(now)
@@ -257,7 +315,12 @@ async def _scan_once() -> None:
         trade = broker.open_trade(signal, sizing["lots"])
         if trade is not None:
             await discord_alerts.alert_trade_opened(trade)
-            await tradesgnl_relay.send_entry(trade)
+            # Paper always opens regardless of the give-back breaker (per
+            # explicit user instruction, it stays a clean, continuous
+            # baseline) -- only the real relay send is suppressed for the
+            # rest of the day once the breaker has tripped.
+            if _giveback_triggered_date != _current_ist_date:
+                await tradesgnl_relay.send_entry(trade)
         open_symbols.add(symbol)
 
 

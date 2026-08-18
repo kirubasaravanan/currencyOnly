@@ -255,6 +255,28 @@ DAILY_LOSS_LIMIT = 3.0       # % of equity, account-wide across all 17 pairs
 WEEKLY_LOSS_LIMIT = 6.0
 MAX_OPEN_TRADES = 5
 MAX_DRAWDOWN_PCT = 10.0
+
+# [ADD 2026-08-18, explicit user instruction] Daily give-back circuit
+# breaker -- account-wide, based on REALIZED P&L only (matches
+# scripts/daily_giveback_report.py's own simplification: a "protect
+# what's already realized" breaker only cares about realized swings).
+# Once today's cumulative realized P&L has peaked at DAILY_GIVEBACK_MIN_PEAK
+# or more, and then falls back by DAILY_GIVEBACK_PCT% or more from that
+# peak, every open position is force-closed (both paper and, via the
+# relay, the real MT5 account) and no new entries are taken for the rest
+# of the IST calendar day.
+#
+# Calibrated on a real 60-day/52-trading-day backtest (2026-06-08 to
+# 2026-08-18, current REQUIRE_CONFLUENCE_GATE=True code): this exact
+# 25%/$100 rule would have triggered on 15 of 52 days (28.8% -- a
+# minority, not most days) and taken total P&L from $4,723.77 to an
+# estimated $6,536.28 (+$1,812.51, +38%, avg $90.84/day -> $125.70/day).
+# The single day that mattered most in this conversation (2026-08-18
+# itself) is exactly the profile this is built for: peaked at $117.97,
+# ended at -$25.12 with nothing to show for the morning's gain.
+DAILY_GIVEBACK_MIN_PEAK = 100.0   # $ -- rule doesn't apply below this peak (avoids acting on noise)
+DAILY_GIVEBACK_PCT = 25.0         # % given back from peak that triggers the stop
+
 LOT_BOUNDS: Dict[str, Tuple[float, float]] = {p: (0.01, 0.50) for p in PAIRS}
 COOLDOWN_BARS = 12  # bars since last exit on ENTRY_TIMEFRAME (15m -> 3h)
 
