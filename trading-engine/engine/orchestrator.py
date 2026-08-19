@@ -352,11 +352,15 @@ async def _scan_once() -> None:
         trade = broker.open_trade(signal, sizing["lots"])
         if trade is not None:
             await discord_alerts.alert_trade_opened(trade)
-            # Paper always opens regardless of the give-back breaker (per
-            # explicit user instruction, it stays a clean, continuous
-            # baseline) -- only the real relay send is suppressed for the
-            # rest of the day once the breaker has tripped.
-            if _giveback_triggered_date != _current_ist_date:
+            # Paper always opens regardless of the give-back breaker or the
+            # manual real-relay switch (per explicit user instruction, it
+            # stays a clean, continuous baseline) -- only the real relay
+            # sends are suppressed, either for the rest of the day once the
+            # breaker has tripped, or entirely while real_relay_enabled is
+            # manually switched off (2026-08-19 addition -- see
+            # config.EngineState.real_relay_enabled's own comment; never
+            # gates send_close()/send_partial_close(), only new entries).
+            if _giveback_triggered_date != _current_ist_date and config.state.real_relay_enabled:
                 await tradesgnl_relay.send_entry(trade)
                 await pineconnector_relay.send_entry(trade)
         open_symbols.add(symbol)

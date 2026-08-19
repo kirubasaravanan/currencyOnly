@@ -62,6 +62,10 @@ class ExitModeRequest(BaseModel):
     exit_mode: str
 
 
+class RealRelayRequest(BaseModel):
+    enabled: bool
+
+
 class BacktestRequest(BaseModel):
     symbols: Optional[List[str]] = None
     days: int = 30
@@ -101,6 +105,7 @@ def register_routes(app: FastAPI) -> None:
             "stats": compute_stats(broker),
             "threshold": config.state.confidence_threshold,
             "exit_mode": config.state.exit_mode,
+            "real_relay_enabled": config.state.real_relay_enabled,
         }
 
     @app.get("/stats")
@@ -181,6 +186,16 @@ def register_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=400, detail='exit_mode must be "dynamic" or "static"')
         config.state.exit_mode = req.exit_mode
         return {"exit_mode": config.state.exit_mode}
+
+    @app.post("/real-relay")
+    async def set_real_relay(req: RealRelayRequest):
+        """Manual master kill-switch for new real-money entries (TradeSgnl,
+        PineConnector, any future native-MT5 relay) -- explicit user
+        instruction, 2026-08-19. Never affects paper trading or the closing
+        of an already-open real position -- see config.EngineState's own
+        comment on real_relay_enabled for why."""
+        config.state.real_relay_enabled = req.enabled
+        return {"real_relay_enabled": config.state.real_relay_enabled}
 
     @app.post("/backtest/run")
     async def backtest_run(req: BacktestRequest):

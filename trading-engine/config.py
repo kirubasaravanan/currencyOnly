@@ -403,6 +403,19 @@ class EngineState:
     # can never silently diverge. "dynamic" or "static" -- see either
     # module's own comments for what each mode actually does.
     exit_mode: str = "dynamic"
+    # [ADD 2026-08-19, explicit user instruction] Manual master kill-switch
+    # for NEW real-money entries only -- flippable without a restart via
+    # POST /real-relay, same runtime-adjustable pattern as exit_mode above.
+    # Gates every real relay's send_entry() (tradesgnl_relay,
+    # pineconnector_relay, and any future native-MT5 relay) in one place --
+    # orchestrator.py checks this once per entry rather than each relay
+    # module needing its own copy of the same flag. Deliberately does NOT
+    # gate send_close()/send_partial_close() -- flipping this off mid-
+    # position must never orphan an already-open real position; it can
+    # always still be closed normally by its own exit logic. Paper is
+    # completely unaffected either way, same "paper never blocked" principle
+    # as the daily give-back breaker.
+    real_relay_enabled: bool = True
 
 
 state = EngineState()
