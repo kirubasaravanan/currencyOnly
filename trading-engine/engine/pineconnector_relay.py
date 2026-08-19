@@ -15,15 +15,31 @@ sets sl=/tp= in the SAME entry command as the buy/sell, so there's no gap.
 Ported from the sister Forex/Forex app's engine/pineconnector_relay.py —
 that module's own docstring is explicit that PineConnector's grammar has
 "reportedly shifted across versions" and was "NEITHER... checked against
-a live PineConnector reference or real fill yet" -- same caveat applies
-here verbatim. Test-fire against the demo account and check logs before
-trusting this on anything real.
+a live PineConnector reference or real fill yet". That turned out to be
+right to be cautious about: the ported lots=/sl=/tp= parameter names were
+WRONG. [FIX 2026-08-19, found live] Confirmed against a real, already-
+working entry command from the sister app's own live gold bridge (same
+license/account, comment=pineconnector_gold-XAUUSD-L, actually filled)
+that the real parameter names are vol_lots=/sl_price=/tp_price=, not
+lots=/sl=/tp= -- explains every earlier test-fire failure on this account
+(the EA was never reading our lot value at all under the wrong key,
+not a Volume-Type-setting problem as first suspected). Close command
+grammar confirmed live too, same test session: closelong/closeshort +
+comment= works exactly as originally ported -- BUT PineConnector matches
+the close to its position by exact comment string ("Position will not be
+closed since comments differ" was the actual EA error hit mid-test, from
+deliberately using a different comment on a manual test-close).
+_comment_id(symbol, side) is deterministic and called identically by both
+send_entry() and send_close() below, so real trades always match
+automatically -- this constraint only bit the manual test. Worth
+remembering if this ever needs manual/ad-hoc testing again: the close
+comment MUST be byte-identical to the entry's.
 
 Command grammar (LICENSE,ACTION,SYMBOL field order -- TradeSgnl's is
-LICENSE,SYMBOL,ACTION, genuinely different, not a typo -- with lots=/sl=/
-tp= parameter names instead of TradeSgnl's risk=/sl_price=/tp_price=):
-    entry: {license},{buy|sell},{symbol},lots={lots},sl={sl},tp={tp},comment={id}
-    close: {license},{closelong|closeshort},{symbol},comment={id}
+LICENSE,SYMBOL,ACTION, genuinely different, not a typo -- with
+vol_lots=/sl_price=/tp_price= parameter names, confirmed live 2026-08-19):
+    entry: {license},{buy|sell},{symbol},vol_lots={lots},sl_price={sl},tp_price={tp},comment={id}
+    close: {license},{closelong|closeshort},{symbol},comment={id}  -- confirmed live, comment must match entry's exactly
 No documented partial-close or SL/TP-modify command, same limitation as
 TradeSgnl -- so the same WIDE_TP_MULTIPLIER workaround from
 tradesgnl_relay.py applies here too: entry sends a deliberately
@@ -130,9 +146,9 @@ async def send_entry(trade: Dict) -> None:
     tp_to_send = trade["tp_price"] if config.state.exit_mode == "static" else _wide_tp_price(trade)
     command = (
         f"{PINECONNECTOR_LICENSE_ID},{action},{symbol},"
-        f"lots={trade['lots']:.2f},"
-        f"sl={_fmt_price(symbol, trade['sl_price'])},"
-        f"tp={_fmt_price(symbol, tp_to_send)},"
+        f"vol_lots={trade['lots']:.2f},"
+        f"sl_price={_fmt_price(symbol, trade['sl_price'])},"
+        f"tp_price={_fmt_price(symbol, tp_to_send)},"
         f"comment={_comment_id(symbol, trade['side'])}"
     )
     sent = await asyncio.to_thread(_send_sync, command)
@@ -144,6 +160,21 @@ async def send_entry(trade: Dict) -> None:
 
 
 async def send_partial_close(trade: Dict) -> bool:
+    """[FIX 2026-08-19, found live] Confirmed against PineConnector's own
+    official syntax docs (docs.pineconnector.com/syntax) AND a live test-
+    fire: partial close is a DISTINCT action verb (closelongvol/
+    closeshortvol), not a parameter added to closelong/closeshort (that
+    was tried first and just fully closed the position instead -- no
+    partial reduction at all). The volume to close is passed via risk= --
+    confusingly reusing that key name, but confirmed live it means "lots
+    to close" here, not risk sizing (docs: "The risk= parameter in partial
+    closes represents 'the volume to close' rather than risk exposure").
+    Live-tested: a 0.20-lot position sent risk=0.10 correctly reduced to
+    0.10 lots remaining, not a full close. Note this is the exact
+    "closelongvol/closeshortvol" grammar that turned out to be WRONG when
+    guessed for TradeSgnl (see that module's own 2026-08-17 fix note) --
+    right for this platform, wrong for that one, a reminder these two
+    relays' grammars never transfer to each other."""
     if not PINECONNECTOR_LICENSE_ID:
         return False
     if trade["id"] not in _confirmed_open_ids:
@@ -153,16 +184,18 @@ async def send_partial_close(trade: Dict) -> bool:
     _relayed_partial_ids.add(trade["id"])
     symbol = trade["symbol"]
     is_long = trade["side"] in ("BUY", "BULLISH")
-    close_action = "closelong" if is_long else "closeshort"
-    # No documented partial-close parameter in PineConnector's grammar
-    # (unlike TradeSgnl's pct=) -- flagged as a real gap, not guessed at.
-    # Falls through to a full close via send_close() instead of a silent
-    # wrong command; the paper side still tracks the partial correctly,
-    # only PineConnector's own position stays full-size until the final
-    # close. Revisit once PineConnector's actual partial-close syntax (if
-    # any) is confirmed against a live test-fire.
-    print(f"[pineconnector_relay] no confirmed partial-close syntax -- skipping partial relay for {symbol} id={trade['id']}, will full-close on the runner's own exit")
-    return False
+    partial_action = "closelongvol" if is_long else "closeshortvol"
+    volume_closed = round(trade.get("original_lots", trade["lots"]) - trade["lots"], 2)
+    command = (
+        f"{PINECONNECTOR_LICENSE_ID},{partial_action},{symbol},"
+        f"risk={volume_closed:.2f},"
+        f"comment={_comment_id(symbol, trade['side'])}"
+    )
+    sent = await asyncio.to_thread(_send_sync, command)
+    if not sent:
+        from engine import discord_alerts
+        await discord_alerts.alert_relay_failure(symbol, "partial_close", command, relay="pineconnector")
+    return sent
 
 
 async def send_close(trade: Dict) -> bool:
