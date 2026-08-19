@@ -124,15 +124,20 @@ async def alert_partial_close(trade: Dict, relayed: bool) -> None:
     await _send_embed(embed)
 
 
-async def alert_relay_failure(symbol: str, kind: str, command: str) -> None:
+async def alert_relay_failure(symbol: str, kind: str, command: str, relay: str = "tradesgnl") -> None:
     """[ADD 2026-08-17, found live] tradesgnl_relay.py's _send_sync() only
     ever printed a failed webhook response to the log file -- nothing
     surfaced to Discord. A GBPJPY partial-close silently failed (TradeSgnl
     rejected an invalid command) and went unnoticed for ~90 minutes, found
     only because the user happened to check a TradeSgnl email directly.
-    Every relay call now routes its failure here instead of staying log-only."""
+    Every relay call now routes its failure here instead of staying log-only.
+
+    [ADD 2026-08-19] `relay` distinguishes which real connection failed now
+    that pineconnector_relay.py runs alongside tradesgnl_relay.py as a
+    second, independent real connection -- defaults to "tradesgnl" so the
+    original call site (which never passed this) keeps working unchanged."""
     embed = {
-        "title": f"🔴 Real MT5 relay send failed — {symbol} ({kind})",
+        "title": f"🔴 Real MT5 relay send failed — {relay} — {symbol} ({kind})",
         "color": RED,
         "fields": [{"name": "Command sent", "value": command, "inline": False}],
     }

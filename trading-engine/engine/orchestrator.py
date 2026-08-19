@@ -9,6 +9,13 @@ exit to a real MT5 account via TradeSgnl (engine/tradesgnl_relay.py) —
 both live-only, since this module (unlike paper_broker.py) is never
 touched by the backtester, so a historical replay can never trigger a
 fake alert or a real order.
+
+[ADD 2026-08-19, explicit user instruction] pineconnector_relay.py runs
+alongside tradesgnl_relay.py as a SECOND, independent real connection from
+the same paper trades -- not a replacement. Every call site below fires
+both relays; each is independently no-op until its own license/webhook
+env vars are configured, so leaving PineConnector unconfigured has zero
+live effect on the existing TradeSgnl connection.
 """
 
 from __future__ import annotations
@@ -22,7 +29,7 @@ from typing import Dict, List, Optional
 import config
 from config import PAIRS, MAJORS, MTF_TIMEFRAMES, ENGINE_LOOP_SECONDS, SESSIONS_UTC, state
 from data.market_data import market_data
-from engine import risk, correlation, trade_manager, currency_strength, discord_alerts, tradesgnl_relay, trade_sync_heartbeat
+from engine import risk, correlation, trade_manager, currency_strength, discord_alerts, tradesgnl_relay, pineconnector_relay, trade_sync_heartbeat
 from engine.entry import entry_signal
 from engine.paper_broker import broker
 from engine.session_dominance import current_session
@@ -68,6 +75,7 @@ async def _process_new_closed_trades(now: datetime) -> None:
     for t in new_trades:
         await discord_alerts.alert_trade_closed(t)
         await tradesgnl_relay.send_close(t)
+        await pineconnector_relay.send_close(t)
         _session_trades.append(t)
         _day_trades.append(t)
 
@@ -147,8 +155,9 @@ async def _check_daily_giveback_breaker() -> None:
     _save_giveback_triggered_date(_current_ist_date)
     closed_symbols: List[str] = []
     for t in list(broker.open_positions):
-        sent = await tradesgnl_relay.send_close(t)
-        if sent:
+        sent_tradesgnl = await tradesgnl_relay.send_close(t)
+        sent_pineconnector = await pineconnector_relay.send_close(t)
+        if sent_tradesgnl or sent_pineconnector:
             closed_symbols.append(t["symbol"])
     await discord_alerts.alert_daily_giveback_triggered(peak, current, closed_symbols)
 
@@ -166,6 +175,7 @@ async def _process_partial_takes() -> None:
         if t.get("partial_taken") and t["id"] not in _relayed_partial_ids:
             _relayed_partial_ids.add(t["id"])
             relayed = await tradesgnl_relay.send_partial_close(t)
+            await pineconnector_relay.send_partial_close(t)
             await discord_alerts.alert_partial_close(t, relayed)
 
 
@@ -348,6 +358,7 @@ async def _scan_once() -> None:
             # rest of the day once the breaker has tripped.
             if _giveback_triggered_date != _current_ist_date:
                 await tradesgnl_relay.send_entry(trade)
+                await pineconnector_relay.send_entry(trade)
         open_symbols.add(symbol)
 
 
@@ -369,10 +380,15 @@ async def _loop() -> None:
 async def start() -> None:
     global _task, _alerted_closed_count, _day_trades, _session_trades, _current_ist_date, _current_session_name
     if _task is None or _task.done():
-        # Re-arm the relay's confirmed-sent tracking for whatever's already
+        # Re-arm each relay's confirmed-sent tracking for whatever's already
         # open in the paper broker -- otherwise a restart silently strands
         # those positions' closes/partials (see tradesgnl_relay.seed_confirmed_ids).
+        # Both relays seed independently -- pineconnector_relay staying
+        # unconfigured means its own seed call is simply inert (no
+        # PINECONNECTOR_LICENSE_ID means every one of its own functions
+        # no-ops regardless of what's seeded).
         tradesgnl_relay.seed_confirmed_ids(broker.open_positions)
+        pineconnector_relay.seed_confirmed_ids(broker.open_positions)
         # [FIX 2026-08-17, found live -- user reported Discord spam right
         # after a restart] broker.closed_trades is loaded from persisted
         # disk state (up to the last 500 trades) on every startup, but this
