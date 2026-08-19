@@ -57,16 +57,18 @@ async def main() -> None:
         trades_sorted = sorted(trades, key=lambda t: t["closed_at"])
         running = 0.0
         peak = 0.0
+        trough = 0.0
         for t in trades_sorted:
             running += t.get("pnl", 0.0)
             peak = max(peak, running)
+            trough = min(trough, running)
         final = running
         giveback = round(peak - final, 2) if peak > 0 else 0.0
-        rows.append((day, len(trades), round(peak, 2), round(final, 2), giveback))
+        rows.append((day, len(trades), round(peak, 2), round(final, 2), giveback, round(trough, 2)))
 
-    print(f"{'DATE':<12}{'TRADES':>8}{'PEAK':>10}{'FINAL':>10}{'GIVEBACK':>10}")
-    for day, n, peak, final, giveback in rows:
-        print(f"{str(day):<12}{n:>8}{peak:>10.2f}{final:>10.2f}{giveback:>10.2f}")
+    print(f"{'DATE':<12}{'TRADES':>8}{'PEAK':>10}{'FINAL':>10}{'GIVEBACK':>10}{'TROUGH':>10}")
+    for day, n, peak, final, giveback, trough in rows:
+        print(f"{str(day):<12}{n:>8}{peak:>10.2f}{final:>10.2f}{giveback:>10.2f}{trough:>10.2f}")
 
     positive_peak_days = [r for r in rows if r[2] > 0]
     givebacks = sorted(r[4] for r in positive_peak_days)
@@ -84,6 +86,23 @@ async def main() -> None:
         print(f"  mean:   ${sum(givebacks)/n:.2f}")
     print(f"\nAvg final daily net P&L (all days): ${sum(finals)/len(finals):.2f}")
     print(f"Total net P&L over {DAYS} days: ${sum(finals):.2f}")
+
+    # Test a fixed daily-SL rule: once intraday cumulative P&L touches
+    # -SL_DOLLARS, cap that day's result there instead of whatever it
+    # actually ended up doing.
+    SL_DOLLARS = 200.0
+    triggered = 0
+    capped_total = 0.0
+    for day, n, peak, final, giveback, trough in rows:
+        if trough <= -SL_DOLLARS:
+            triggered += 1
+            capped_total += -SL_DOLLARS
+        else:
+            capped_total += final
+
+    print(f"\n=== FIXED DAILY SL TEST (-${SL_DOLLARS:.0f}) ===")
+    print(f"Days where intraday P&L touched -${SL_DOLLARS:.0f} or worse: {triggered}/{len(rows)}")
+    print(f"Total net P&L WITH this SL cap: ${capped_total:.2f} (actual: ${sum(finals):.2f})")
 
 
 if __name__ == "__main__":
