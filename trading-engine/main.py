@@ -11,7 +11,7 @@ load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from engine import orchestrator
+from engine import discord_bot_listener, orchestrator
 from routes import register_routes
 
 app = FastAPI(title="currencyOnly Trading Engine", version="1.0.0")
@@ -28,6 +28,7 @@ app.add_middleware(
 @app.on_event("startup")
 async def _startup() -> None:
     await orchestrator.start()
+    discord_bot_listener.start()
 
 
 @app.on_event("shutdown")
