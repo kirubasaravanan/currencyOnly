@@ -21,14 +21,13 @@ is False (14th char is "_" vs "-"), so the gold bridge's trades are
 excluded by construction, no separate symbol check needed (a redundant
 XAUUSD guard is still kept below as defense-in-depth).
 
-[IMPORTANT, unverified] MT5_SERVER_UTC_OFFSET below is COPIED from
-trade_sync_heartbeat.py's own empirically-confirmed value for the
-DIFFERENT account/broker that module reads (110875560, Third Mt5) -- it is
-NOT yet confirmed for whatever broker FundedNext actually runs on. Treat
-this as a placeholder needing its own verification (compare a real
-FundedNext trade's MT5 deal .time against its known true UTC open time,
-same method used to confirm the original value) before trusting this
-module's day-boundary math on day one.
+[VERIFIED 2026-08-20] MT5_SERVER_UTC_OFFSET below was originally COPIED
+from trade_sync_heartbeat.py's own empirically-confirmed value for the
+DIFFERENT account/broker that module reads (110875560, Third Mt5). Since
+confirmed independently for FundedNext-Server too (account 12034354):
+compared a live tick's .time against true UTC (no deal history existed
+yet to compare against) and got ~3h00m00s, matching this constant exactly
+-- same offset, different broker, coincidence not an assumption.
 
 Exit deals' own comment field gets overwritten by the broker (e.g.
 "[tp 1.123]"), same finding trade_sync_heartbeat.py already made -- so
