@@ -29,7 +29,7 @@ from typing import Dict, List, Optional
 import config
 from config import PAIRS, MAJORS, MTF_TIMEFRAMES, ENGINE_LOOP_SECONDS, SESSIONS_UTC, state
 from data.market_data import market_data
-from engine import risk, correlation, trade_manager, currency_strength, discord_alerts, tradesgnl_relay, pineconnector_relay, trade_sync_heartbeat
+from engine import risk, correlation, trade_manager, currency_strength, discord_alerts, tradesgnl_relay, pineconnector_relay, trade_sync_heartbeat, real_giveback_source
 from engine.entry import entry_signal
 from engine.paper_broker import broker
 from engine.session_dominance import current_session
@@ -82,40 +82,44 @@ async def _process_new_closed_trades(now: datetime) -> None:
 
 # [ADD 2026-08-18, explicit user instruction, calibrated on a real 60-day
 # backtest -- see config.DAILY_GIVEBACK_MIN_PEAK/_PCT for the evidence]
-# Daily give-back circuit breaker -- REAL SIDE ONLY, by explicit user
-# instruction: "paper trade will also will happen as usual only tradesgnl
-# should be blocked". Paper's own trades, P&L, and signal generation are
-# completely untouched by this -- it stays a clean, continuous research
-# baseline. Once triggered, this only (a) sends an explicit real close for
-# every currently-open position (paper keeps tracking that same position
-# as open and continues managing it via its own normal SL/TP/trailing
-# logic, same as if this breaker didn't exist) and (b) suppresses
-# send_entry() for any new paper trades opened for the rest of the day
-# (see the entry block in _scan_once). Existing tradesgnl_relay bookkeeping
-# already makes this safe: send_close() discards the trade id from
-# _confirmed_open_ids once relayed, so paper's own later close of the same
-# trade correctly no-ops on the relay side instead of double-closing.
+# [CHANGED 2026-08-20, explicit user instruction] Was paper-data-driven;
+# now sources from the actual FundedNext MT5 account's real, realized P&L
+# (engine/real_giveback_source.py) instead -- the breaker exists to protect
+# real money, and this session repeatedly found paper's numbers can diverge
+# from real by real dollars, so deciding off paper never made sense once a
+# real account was in the picture. Threshold values (DAILY_GIVEBACK_MIN_PEAK/
+# _PCT) are UNCHANGED, kept deliberately tight relative to a bigger
+# FundedNext balance per explicit user instruction -- closing out early is
+# the intent, to stay out of the riskiest NY-session volatility (6PM IST)
+# rather than ride it.
 #
-# Recomputed fresh from _day_trades every scan rather than maintained as a
-# separately-seeded running variable -- _day_trades is already correctly
-# seeded/reset elsewhere (see start() and _check_eod_rollover), so
-# replaying it each time mostly self-heals across a same-day restart: if
-# this should already have triggered based on trades that closed before
-# the restart, the next scan re-detects that and re-arms the flag.
+# ACCOUNT-SCOPED, not global: per explicit user instruction ("tradsgnl
+# account should not be blocked by the Daily giveback limit"), this now
+# only ever touches PineConnector (the FundedNext-connected relay) -- both
+# the forced closes and the entry-block below. TradeSgnl keeps trading
+# completely unrestricted regardless of FundedNext's give-back status; it's
+# a deliberately unconstrained data source, not a party to this account's
+# risk limit. Paper is untouched either way, same as always -- it stays a
+# clean, continuous research baseline.
 #
-# [FIX 2026-08-18, found live] That self-healing has a real gap though:
-# it depends on peak/current STILL crossing the threshold at the moment of
-# the post-restart recompute. If P&L partially recovers between the
-# original trigger and a later restart (e.g. a subsequent trade brings
-# `current` back above 75% of `peak`), the recompute-and-check finds
-# nothing to trigger on and _giveback_triggered_date stays unset -- silently
-# re-permitting entries for the rest of a day that had already breached the
-# limit, contradicting the rule's own "entries paused for today" intent.
-# Persisting the triggered date to disk (once actually set) closes this --
-# a restart now restores the flag directly instead of re-deriving it from
-# P&L that may have moved on.
+# Fails safe: real_giveback_source returns None whenever the FundedNext
+# account can't be verified reachable this cycle (terminal not running,
+# wrong account, disconnected) -- treated as "no data, skip," never as
+# "assume triggered" or "assume fine." Same "never fabricate" convention as
+# trade_sync_heartbeat.py.
+#
+# [FIX 2026-08-18, found live, still applies] Persisting the triggered
+# date to disk closes a restart-persistence gap: without it, a restart
+# after the breaker already fired today could lose that state and silently
+# re-permit PineConnector entries for the rest of a day that had already
+# breached the limit.
 _giveback_triggered_date: Optional[str] = None
 _GIVEBACK_STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "storage", "giveback_state.json")
+
+# MT5 reads are blocking -- same reasoning as _check_sync_heartbeat's own
+# cadence guard below, this must not run on every 60s scan.
+GIVEBACK_CHECK_INTERVAL_SECONDS = 2 * 60
+_last_giveback_check_at = 0.0
 
 
 def _load_giveback_triggered_date() -> Optional[str]:
@@ -134,17 +138,21 @@ def _save_giveback_triggered_date(date_str: str) -> None:
 
 
 async def _check_daily_giveback_breaker() -> None:
-    global _giveback_triggered_date
+    global _giveback_triggered_date, _last_giveback_check_at
     if _giveback_triggered_date == _current_ist_date:
         return
 
-    trades_sorted = sorted(_day_trades, key=lambda t: t["closed_at"])
-    running = 0.0
-    peak = 0.0
-    for t in trades_sorted:
-        running += t.get("pnl", 0.0)
-        peak = max(peak, running)
-    current = running
+    now_ts = datetime.now(timezone.utc).timestamp()
+    if now_ts - _last_giveback_check_at < GIVEBACK_CHECK_INTERVAL_SECONDS:
+        return
+    _last_giveback_check_at = now_ts
+
+    real_state = await real_giveback_source.get_today_real_giveback_state()
+    if real_state is None:
+        return  # not reachable this cycle -- no data, no action, try again next cycle
+
+    peak = real_state["peak"]
+    current = real_state["current"]
 
     if peak < config.DAILY_GIVEBACK_MIN_PEAK:
         return
@@ -155,9 +163,8 @@ async def _check_daily_giveback_breaker() -> None:
     _save_giveback_triggered_date(_current_ist_date)
     closed_symbols: List[str] = []
     for t in list(broker.open_positions):
-        sent_tradesgnl = await tradesgnl_relay.send_close(t)
-        sent_pineconnector = await pineconnector_relay.send_close(t)
-        if sent_tradesgnl or sent_pineconnector:
+        sent = await pineconnector_relay.send_close(t)
+        if sent:
             closed_symbols.append(t["symbol"])
     await discord_alerts.alert_daily_giveback_triggered(peak, current, closed_symbols)
 
@@ -352,17 +359,24 @@ async def _scan_once() -> None:
         trade = broker.open_trade(signal, sizing["lots"])
         if trade is not None:
             await discord_alerts.alert_trade_opened(trade)
-            # Paper always opens regardless of the give-back breaker or the
-            # manual real-relay switch (per explicit user instruction, it
-            # stays a clean, continuous baseline) -- only the real relay
-            # sends are suppressed, either for the rest of the day once the
-            # breaker has tripped, or entirely while real_relay_enabled is
-            # manually switched off (2026-08-19 addition -- see
-            # config.EngineState.real_relay_enabled's own comment; never
-            # gates send_close()/send_partial_close(), only new entries).
-            if _giveback_triggered_date != _current_ist_date and config.state.real_relay_enabled:
+            # Paper always opens regardless of either gate below (per
+            # explicit user instruction, it stays a clean, continuous
+            # baseline) -- only the real relay sends are ever suppressed.
+            # The two relays are gated INDEPENDENTLY, not together:
+            #   - TradeSgnl: only the manual real_relay_enabled switch.
+            #     Never touched by the give-back breaker -- explicit user
+            #     instruction, 2026-08-20: "tradsgnl account should not be
+            #     blocked by the Daily giveback limit". It's a deliberately
+            #     unconstrained data source, not a party to FundedNext's
+            #     own risk limit.
+            #   - PineConnector (the FundedNext-connected relay): the same
+            #     manual switch AND the give-back breaker, since that
+            #     breaker's whole purpose is protecting this specific
+            #     account.
+            if config.state.real_relay_enabled:
                 await tradesgnl_relay.send_entry(trade)
-                await pineconnector_relay.send_entry(trade)
+                if _giveback_triggered_date != _current_ist_date:
+                    await pineconnector_relay.send_entry(trade)
         open_symbols.add(symbol)
 
 
