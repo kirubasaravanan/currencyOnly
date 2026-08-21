@@ -189,8 +189,19 @@ PAIR_CALIBRATION: Dict[str, PairCalibration] = {
         min_sl_pips=6, min_base=0.0004, para_thresh=0.45, use_trend_filter=False,
         activation_usd=25.0,
     ),
+    # [FIX 2026-08-21, explicit user instruction, 60-day backtest evidence]
+    # Original ported window was "0830-1130,1430-1830" -- revalidated after
+    # a live 08:32 IST entry underperformed and matched the user's own
+    # "Swiss 6am, US midnight" observation. Hour-by-hour backtest showed
+    # the morning window (08:30-11:30) net -$190/60d across every hour in
+    # it, while 14:00-19:00 was consistently strong (+$454/60d, 75-100%
+    # win every hour) -- and isn't a coincidence: 14:00-19:00 IST is
+    # 08:30-13:30 UTC, i.e. London's main session through the London-NY
+    # handoff, the highest-liquidity window in FX. Morning window dropped
+    # entirely; afternoon window widened slightly (1430-1830 -> 1400-1900)
+    # to capture two more hours the data showed were also strong.
     "USDCHF": PairCalibration(
-        session_windows_ist=_ist("0830-1130,1430-1830"), stop_mult=1.30, tp_mult=1.50,
+        session_windows_ist=_ist("1400-1900"), stop_mult=1.30, tp_mult=1.50,
         max_sl_pips=40, min_sl_pips=8, min_base=0.0005, para_thresh=0.50,
         use_trend_filter=False, activation_usd=30.0,
     ),
@@ -204,8 +215,21 @@ PAIR_CALIBRATION: Dict[str, PairCalibration] = {
         min_base=0.05, para_thresh=0.55, use_trend_filter=False,
         activation_usd=100.0, activation_pct=90.0, trail_lock_pct=0.0,
     ),
+    # [FIX 2026-08-21, explicit user instruction, 60-day backtest evidence]
+    # AUDJPY was the worst-performing pair in the live paper track record
+    # (-$77.76, PF 0.27) -- original ported windows "0530-1000,1730-2000"
+    # netted -$83.68/60d when hour-gated, and the messy, non-contiguous
+    # hour-by-hour pattern doesn't support cherry-picking scattered hours
+    # (that's overfitting, not a real edge). What DOES hold up: AUD and
+    # JPY are both Asian-session currencies, and 05:00-17:00 IST (Asian
+    # session through the Tokyo->London handover) nets +$573.92/60d,
+    # mostly 80-100% win hours -- while the OLD evening window
+    # (17:30-20:00 IST) is pure London hours where neither currency is
+    # dominant (per session_dominance.py's own mapping) and was
+    # consistently the worst part of the pair's day (-163, -184, -167
+    # across 17:00/19:00/20:00). Single contiguous window replacing both.
     "AUDJPY": PairCalibration(
-        session_windows_ist=_ist("0530-1000,1730-2000"), stop_mult=1.20, tp_mult=2.80,
+        session_windows_ist=_ist("0500-1700"), stop_mult=1.20, tp_mult=2.80,
         min_base=0.05, max_sl_pips=45, min_sl_pips=8, para_thresh=0.45,
         use_trend_filter=False, activation_usd=40.0,
     ),
