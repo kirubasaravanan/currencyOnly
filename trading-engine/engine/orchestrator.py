@@ -342,12 +342,26 @@ async def _check_daily_giveback_breaker() -> None:
 
 
 async def _check_fundednext_aggregate_risk() -> None:
-    """[ADD 2026-08-21, explicit user instruction -- "Build 2"] Standing
-    monitor, independent of any pending FX trade -- see
+    """[ADD 2026-08-21, explicit user instruction -- "Build 2", upgraded
+    same day from alert-only to actually acting] Standing monitor,
+    independent of any pending FX trade -- see
     real_risk_source._current_risk_sync's docstring and
     FUNDEDNEXT_RISK_CHECK_INTERVAL_SECONDS above for why this exists
-    separately from the entry gate in _scan_once. Read-only: never closes
-    or blocks anything, only alerts."""
+    separately from the entry gate in _scan_once.
+
+    This is a REAL compliance rule on a real funded challenge ("Max Risk:
+    3% At any time"), not an opportunistic protection -- so on a detected
+    breach this closes currencyOnly's own real PineConnector/FundedNext
+    positions (the one lever this app actually has -- it cannot touch the
+    sister app's gold bridge, which has no equivalent check of its own)
+    via close_all_real_positions(), the same verified-not-trusted close
+    path the give-back breaker uses. Paper and TradeSgnl are untouched,
+    same as every other real-money mechanism in this file.
+
+    If closing our own side isn't enough (gold alone is over 3%, or there
+    was nothing of ours open to close), that's reported explicitly in the
+    alert rather than silently -- this app has no further lever in that
+    case; it needs direct attention on the account itself."""
     global _last_fundednext_risk_check_at, _fundednext_risk_breach_alerted
 
     now_ts = datetime.now(timezone.utc).timestamp()
@@ -364,17 +378,35 @@ async def _check_fundednext_aggregate_risk() -> None:
         return
 
     if _fundednext_risk_breach_alerted:
-        return  # already alerted for this ongoing breach, don't repeat every cycle
+        return  # already acted on this ongoing breach, don't repeat every cycle
     _fundednext_risk_breach_alerted = True
 
+    close_result = await close_all_real_positions()
+    closed_symbols = close_result.get("closed_symbols", [])
+
+    after = await real_risk_source.check_current_aggregate_risk()
+    after_line = (
+        f"Real risk after closing our side: {after['current_open_risk_pct']:.2f}% "
+        f"(${after['current_open_risk_usd']:.2f})."
+        if after is not None
+        else "Couldn't re-verify the resulting number right after closing -- check the account directly."
+    )
+
+    if closed_symbols:
+        action_line = f"Closed currencyOnly's own real FundedNext position(s): {', '.join(closed_symbols)}."
+    else:
+        action_line = (
+            "No currencyOnly FX positions were open on FundedNext to close -- this breach is "
+            "coming entirely from something else (most likely the gold bridge). Nothing more "
+            "this app can do from its side."
+        )
+
     await discord_alerts.alert_engine_event(
-        "🚨 FundedNext real open risk already over 3% -- not from a currencyOnly FX trade",
-        f"Current open risk ${snapshot['current_open_risk_usd']:.2f} across "
+        "🚨 FundedNext real open risk exceeded 3% -- closed our side",
+        f"Before action: ${snapshot['current_open_risk_usd']:.2f} across "
         f"{snapshot['position_count']} open position(s) = {snapshot['current_open_risk_pct']:.2f}% "
         f"of ${snapshot['equity']:.2f} equity (limit {real_risk_source.MAX_RISK_PCT}%). "
-        f"currencyOnly's own entry gate only checks when IT is about to send a trade, so this "
-        f"was likely caused by something else opening independently (e.g. the gold bridge) -- "
-        f"worth checking the account directly.",
+        f"{action_line} {after_line} Paper and TradeSgnl untouched.",
     )
 
 
