@@ -26,11 +26,40 @@ from typing import Dict, FrozenSet, List, Tuple
 # structurally never gets a single clean directional session -- only
 # "dead" or "both currencies fighting each other." Matches the user's own
 # trading-experience read that this pair chops.
+# [ADD 2026-08-21, explicit user instruction] Trial addition -- EURJPY,
+# NZDJPY, CADJPY, EURAUD, EURNZD. Flagged as good candidates (liquid
+# crosses pairing currencies from DIFFERENT correlation groups --
+# European/risk-on vs JPY's safe-haven/funding role for the first three,
+# European vs commodity/Asian-Pacific for the last two -- the same
+# "opposite reaction to sentiment" dynamic that makes AUDJPY trade well,
+# not the same-group correlation that made EURGBP chop). No V109 ported
+# values exist for these -- full 24h window for now, pending the same
+# hour-by-hour backtest revalidation already done for the original 17.
+# User's own instruction: add all 5 for a one-week monitoring period
+# regardless of backtest read -- paper AND TradeSgnl relay normally (see
+# PINECONNECTOR_EXCLUDED_PAIRS below), since TradeSgnl is demo/no-real-
+# money, the same unconstrained-data-source role it already plays for
+# every other pair. PineConnector (the real FundedNext relay) stays
+# excluded until TradeSgnl's live results over that period are
+# satisfactory.
 PAIRS: List[str] = [
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "NZDUSD", "USDCHF", "USDCAD",
     "GBPCAD", "GBPJPY", "AUDJPY", "AUDCAD", "GBPAUD", "EURCAD", "GBPNZD",
-    "NZDCAD", "CHFJPY",
+    "NZDCAD", "CHFJPY", "EURJPY", "NZDJPY", "CADJPY", "EURAUD", "EURNZD",
 ]
+
+# [ADD 2026-08-21, explicit user instruction; scope clarified same day]
+# Trial pairs that open/manage trades normally on paper AND relay
+# normally to TradeSgnl (demo account, no real money -- exactly the
+# "unconstrained data source" role TradeSgnl already plays for every
+# other pair) but are NEVER sent to PineConnector (the real
+# FundedNext-connected relay) -- orchestrator.py's entry-gating block
+# checks this before calling pineconnector_relay.send_entry() only,
+# TradeSgnl is untouched by this set entirely. Once TradeSgnl's live
+# results over the monitoring period are satisfactory, a pair can be
+# promoted off this set to relay normally everywhere. Empty by default
+# (every original pair already relays to both).
+PINECONNECTOR_EXCLUDED_PAIRS: FrozenSet[str] = frozenset({"EURJPY", "NZDJPY", "CADJPY", "EURAUD", "EURNZD"})
 
 MAJORS: List[str] = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "NZDUSD", "USDCHF", "USDCAD"]
 
@@ -64,7 +93,8 @@ OANDA_SYMBOL_MAP: Dict[str, str] = {
     "USDCAD": "USD_CAD", "GBPCAD": "GBP_CAD", "GBPJPY": "GBP_JPY",
     "AUDJPY": "AUD_JPY", "AUDCAD": "AUD_CAD", "GBPAUD": "GBP_AUD",
     "EURCAD": "EUR_CAD", "GBPNZD": "GBP_NZD", "NZDCAD": "NZD_CAD",
-    "CHFJPY": "CHF_JPY",
+    "CHFJPY": "CHF_JPY", "EURJPY": "EUR_JPY", "NZDJPY": "NZD_JPY",
+    "CADJPY": "CAD_JPY", "EURAUD": "EUR_AUD", "EURNZD": "EUR_NZD",
 }
 
 # Yahoo Finance fallback tickers (=X convention), used only if OANDA fails.
@@ -124,7 +154,8 @@ RAW_SPREAD_PIPS: Dict[str, float] = {
     "NZDUSD": 0.5, "USDCHF": 0.4, "USDCAD": 0.4, "GBPCAD": 1.2,
     "GBPJPY": 0.6, "AUDJPY": 0.5, "AUDCAD": 0.6, "GBPAUD": 1.2,
     "EURCAD": 1.0, "GBPNZD": 1.8, "NZDCAD": 1.2,
-    "CHFJPY": 0.8,
+    "CHFJPY": 0.8, "EURJPY": 0.6, "NZDJPY": 0.7, "CADJPY": 0.8,
+    "EURAUD": 1.0, "EURNZD": 1.4,
 }
 COMMISSION_PER_LOT_PER_SIDE_USD = 3.50  # ~$7 round-turn per standard 100k lot
 
@@ -276,6 +307,36 @@ PAIR_CALIBRATION: Dict[str, PairCalibration] = {
     "CHFJPY": PairCalibration(
         session_windows_ist=_ist("0800-1500"), max_sl_pips=40, min_sl_pips=8,
         min_base=0.05, use_trend_filter=True, activation_usd=40.0,
+    ),
+    # [ADD 2026-08-21, explicit user instruction] Trial pairs -- see the
+    # PAIRS/PAPER_ONLY_PAIRS comment above. No V109 ported values exist,
+    # so these are generic starting points (matching PairCalibration's own
+    # class defaults, plus JPY-appropriate min_base/max_sl_pips matching
+    # the other JPY crosses above) with the session gate left fully open
+    # (full 24h) specifically so the backtester can discover where each
+    # pair's real edge sits, same hour-by-hour method already used to fix
+    # USDCHF/AUDJPY/NZDCAD. Narrow to a real window only after that
+    # backtest, and only once genuinely positive -- these stay
+    # paper-only (PAPER_ONLY_PAIRS) throughout the observation period.
+    "EURJPY": PairCalibration(
+        session_windows_ist=_ist("0000-2400"), max_sl_pips=40, min_sl_pips=8,
+        min_base=0.05, use_trend_filter=True, activation_usd=30.0,
+    ),
+    "NZDJPY": PairCalibration(
+        session_windows_ist=_ist("0000-2400"), max_sl_pips=45, min_sl_pips=8,
+        min_base=0.05, use_trend_filter=False, activation_usd=40.0,
+    ),
+    "CADJPY": PairCalibration(
+        session_windows_ist=_ist("0000-2400"), max_sl_pips=45, min_sl_pips=8,
+        min_base=0.05, use_trend_filter=False, activation_usd=40.0,
+    ),
+    "EURAUD": PairCalibration(
+        session_windows_ist=_ist("0000-2400"), max_sl_pips=45, min_sl_pips=8,
+        min_base=0.0005, use_trend_filter=True, activation_usd=30.0,
+    ),
+    "EURNZD": PairCalibration(
+        session_windows_ist=_ist("0000-2400"), max_sl_pips=45, min_sl_pips=8,
+        min_base=0.0005, use_trend_filter=True, activation_usd=30.0,
     ),
 }
 

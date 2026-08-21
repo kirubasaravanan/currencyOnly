@@ -530,10 +530,19 @@ async def _scan_once() -> None:
             #   - PineConnector (the FundedNext-connected relay): the same
             #     manual switch, PLUS the automatic give-back breaker
             #     (protects this specific real account), PLUS
-            #     _manual_block_date (the user's own "!stopday" command).
+            #     _manual_block_date (the user's own "!stopday" command),
+            #     PLUS config.PINECONNECTOR_EXCLUDED_PAIRS -- new trial
+            #     pairs (2026-08-21: EURJPY/NZDJPY/CADJPY/EURAUD/EURNZD)
+            #     relay to TradeSgnl normally (demo, no real money) but
+            #     stay off the real FundedNext account until their
+            #     TradeSgnl monitoring period is satisfactory.
             if config.state.real_relay_enabled:
                 await tradesgnl_relay.send_entry(trade)
-                if _giveback_triggered_date != _current_ist_date and _manual_block_date != _current_ist_date:
+                if (
+                    _giveback_triggered_date != _current_ist_date
+                    and _manual_block_date != _current_ist_date
+                    and symbol not in config.PINECONNECTOR_EXCLUDED_PAIRS
+                ):
                     await pineconnector_relay.send_entry(trade)
         open_symbols.add(symbol)
 
