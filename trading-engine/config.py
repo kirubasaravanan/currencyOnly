@@ -17,10 +17,19 @@ from typing import Dict, FrozenSet, List, Tuple
 # Symbols
 # ---------------------------------------------------------------------------
 
+# [FIX 2026-08-21, explicit user instruction] EURGBP removed entirely --
+# three independent signals all pointed the same way: live paper was net
+# -$53.37 over its only 3 trades (small sample, but consistently
+# negative), the 60-day backtest showed only +$20.14/34 trades (barely
+# above noise, not a real edge), and the theoretical session review found
+# EUR and GBP share almost identical dominant sessions, so this pair
+# structurally never gets a single clean directional session -- only
+# "dead" or "both currencies fighting each other." Matches the user's own
+# trading-experience read that this pair chops.
 PAIRS: List[str] = [
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "NZDUSD", "USDCHF", "USDCAD",
     "GBPCAD", "GBPJPY", "AUDJPY", "AUDCAD", "GBPAUD", "EURCAD", "GBPNZD",
-    "NZDCAD", "EURGBP", "CHFJPY",
+    "NZDCAD", "CHFJPY",
 ]
 
 MAJORS: List[str] = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "NZDUSD", "USDCHF", "USDCAD"]
@@ -55,7 +64,7 @@ OANDA_SYMBOL_MAP: Dict[str, str] = {
     "USDCAD": "USD_CAD", "GBPCAD": "GBP_CAD", "GBPJPY": "GBP_JPY",
     "AUDJPY": "AUD_JPY", "AUDCAD": "AUD_CAD", "GBPAUD": "GBP_AUD",
     "EURCAD": "EUR_CAD", "GBPNZD": "GBP_NZD", "NZDCAD": "NZD_CAD",
-    "EURGBP": "EUR_GBP", "CHFJPY": "CHF_JPY",
+    "CHFJPY": "CHF_JPY",
 }
 
 # Yahoo Finance fallback tickers (=X convention), used only if OANDA fails.
@@ -114,7 +123,7 @@ RAW_SPREAD_PIPS: Dict[str, float] = {
     "EURUSD": 0.2, "GBPUSD": 0.3, "USDJPY": 0.2, "AUDUSD": 0.3,
     "NZDUSD": 0.5, "USDCHF": 0.4, "USDCAD": 0.4, "GBPCAD": 1.2,
     "GBPJPY": 0.6, "AUDJPY": 0.5, "AUDCAD": 0.6, "GBPAUD": 1.2,
-    "EURCAD": 1.0, "GBPNZD": 1.8, "NZDCAD": 1.2, "EURGBP": 0.5,
+    "EURCAD": 1.0, "GBPNZD": 1.8, "NZDCAD": 1.2,
     "CHFJPY": 0.8,
 }
 COMMISSION_PER_LOT_PER_SIDE_USD = 3.50  # ~$7 round-turn per standard 100k lot
@@ -251,12 +260,17 @@ PAIR_CALIBRATION: Dict[str, PairCalibration] = {
         session_windows_ist=_ist("0800-1900"), max_sl_pips=40, min_sl_pips=8,
         min_base=0.0005, use_trend_filter=True, activation_usd=40.0,
     ),
+    # [FIX 2026-08-21, explicit user instruction, 60-day backtest evidence]
+    # Original ported window "0800-1900" netted -$149.45/60d, while the
+    # hours it excluded netted +$211.49 -- backwards. NZD (Asian-session)
+    # and CAD (Overlap/NY-session) don't share a home session the way
+    # AUDJPY's two currencies did, so this isn't a single clean block --
+    # it's the two convincingly-negative hours (11:00: 25% win, PF 0.05,
+    # -$106; 18:00: 40% win, PF 0.19, -$140) carved OUT of an otherwise
+    # solid range, plus the convincingly-positive 05:00 hour (n=10, 80%
+    # win, PF 2.33, +$130 -- NZD's own Asian home session) added back in.
     "NZDCAD": PairCalibration(
-        session_windows_ist=_ist("0800-1900"), max_sl_pips=40, min_sl_pips=8,
-        min_base=0.0005, use_trend_filter=True, activation_usd=40.0,
-    ),
-    "EURGBP": PairCalibration(
-        session_windows_ist=_ist("0800-1900"), max_sl_pips=40, min_sl_pips=8,
+        session_windows_ist=_ist("0500-1100,1200-1800"), max_sl_pips=40, min_sl_pips=8,
         min_base=0.0005, use_trend_filter=True, activation_usd=40.0,
     ),
     "CHFJPY": PairCalibration(
