@@ -556,6 +556,11 @@ async def _scan_once() -> None:
                         symbol, trade["lots"], trade["entry_price"], trade["sl_price"], is_long
                     )
                     if risk_check is not None and not risk_check["would_exceed"]:
+                        print(
+                            f"[real_risk_source] {symbol}: projected open risk "
+                            f"{risk_check['projected_open_risk_pct']:.3f}% of ${risk_check['equity']:.2f} "
+                            f"equity (limit {real_risk_source.MAX_RISK_PCT}%) -- OK, sending to PineConnector"
+                        )
                         await pineconnector_relay.send_entry(trade)
                     elif risk_check is not None and risk_check["would_exceed"]:
                         await discord_alerts.alert_engine_event(
