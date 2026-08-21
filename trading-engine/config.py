@@ -330,12 +330,32 @@ PAIR_CALIBRATION: Dict[str, PairCalibration] = {
         session_windows_ist=_ist("0000-2400"), max_sl_pips=45, min_sl_pips=8,
         min_base=0.05, use_trend_filter=False, activation_usd=40.0,
     ),
+    # [FIX 2026-08-21, explicit user instruction, discovery-backtest
+    # evidence] EURAUD's full-24h discovery backtest was -$646.77/60d
+    # (n=44), but almost every hour is theoretically "clean" for this
+    # pair (EUR and AUD are in different correlation groups), so this
+    # isn't a session-mismatch story -- it's genuine hour-specific
+    # performance. Rather than exclude bad hours (there are too many,
+    # and removing even the two worst ones -- 08:00 n=7/-$345, 20:00
+    # n=2/-$193 -- still leaves the rest net negative), kept ONLY the
+    # three well-sampled (n>=3) genuinely positive hours: 05:00 (n=3,
+    # 66.7% win, +$81), 06:00 (n=3, 100% win, +$85), 13:00 (n=4, 75%
+    # win, +$149). Deliberately conservative -- thinner (n=1-2) positive
+    # hours elsewhere weren't trusted enough to include yet.
     "EURAUD": PairCalibration(
-        session_windows_ist=_ist("0000-2400"), max_sl_pips=45, min_sl_pips=8,
+        session_windows_ist=_ist("0500-0700,1300-1400"), max_sl_pips=45, min_sl_pips=8,
         min_base=0.0005, use_trend_filter=True, activation_usd=30.0,
     ),
+    # [FIX 2026-08-21, explicit user instruction, discovery-backtest
+    # evidence] EURNZD's full-24h backtest was -$10.83/60d (n=52,
+    # essentially breakeven) -- unlike EURAUD, removing just the three
+    # well-sampled (n=5 each) genuinely bad hours flips it decisively
+    # positive: 00:00 (20% win, -$329), 07:00 (20% win, -$370), 15:00
+    # (40% win, -$263) together account for -$962 of drag. Everything
+    # else kept (opposite strategy from EURAUD -- here exclusion alone
+    # is enough, no need to cherry-pick thin positive hours).
     "EURNZD": PairCalibration(
-        session_windows_ist=_ist("0000-2400"), max_sl_pips=45, min_sl_pips=8,
+        session_windows_ist=_ist("0100-0700,0800-1500,1600-2400"), max_sl_pips=45, min_sl_pips=8,
         min_base=0.0005, use_trend_filter=True, activation_usd=30.0,
     ),
 }
