@@ -29,7 +29,7 @@ from typing import Dict, List, Optional
 import config
 from config import PAIRS, MAJORS, MTF_TIMEFRAMES, ENGINE_LOOP_SECONDS, SESSIONS_UTC, state
 from data.market_data import market_data
-from engine import risk, correlation, trade_manager, currency_strength, discord_alerts, tradesgnl_relay, pineconnector_relay, trade_sync_heartbeat, real_giveback_source
+from engine import risk, correlation, trade_manager, currency_strength, discord_alerts, tradesgnl_relay, pineconnector_relay, trade_sync_heartbeat, real_giveback_source, real_risk_source
 from engine.entry import entry_signal
 from engine.paper_broker import broker
 from engine.session_dominance import current_session
@@ -535,7 +535,15 @@ async def _scan_once() -> None:
             #     pairs (2026-08-21: EURJPY/NZDJPY/CADJPY/EURAUD/EURNZD)
             #     relay to TradeSgnl normally (demo, no real money) but
             #     stay off the real FundedNext account until their
-            #     TradeSgnl monitoring period is satisfactory.
+            #     TradeSgnl monitoring period is satisfactory. PLUS
+            #     [ADD 2026-08-21] a real-time check against FundedNext's
+            #     actual "Max Risk: 3% At any time" rule -- see
+            #     real_risk_source.py's docstring for why this checks the
+            #     REAL account directly rather than trusting that paper's
+            #     smaller equity keeps the relayed lot sizes safely under
+            #     3% by coincidence, and why "can't verify" fails CLOSED
+            #     here specifically (a real compliance rule, not an
+            #     opportunistic protection like the give-back breaker).
             if config.state.real_relay_enabled:
                 await tradesgnl_relay.send_entry(trade)
                 if (
@@ -543,7 +551,24 @@ async def _scan_once() -> None:
                     and _manual_block_date != _current_ist_date
                     and symbol not in config.PINECONNECTOR_EXCLUDED_PAIRS
                 ):
-                    await pineconnector_relay.send_entry(trade)
+                    is_long = trade["side"] == "BULLISH"
+                    risk_check = await real_risk_source.check_pineconnector_risk_ok(
+                        symbol, trade["lots"], trade["entry_price"], trade["sl_price"], is_long
+                    )
+                    if risk_check is not None and not risk_check["would_exceed"]:
+                        await pineconnector_relay.send_entry(trade)
+                    elif risk_check is not None and risk_check["would_exceed"]:
+                        await discord_alerts.alert_engine_event(
+                            "⚠️ PineConnector entry skipped -- would exceed FundedNext's 3% max-risk rule",
+                            f"{symbol}: current open risk ${risk_check['current_open_risk_usd']:.2f} + this "
+                            f"trade ${risk_check['new_trade_risk_usd']:.2f} = "
+                            f"{risk_check['projected_open_risk_pct']:.2f}% of ${risk_check['equity']:.2f} equity "
+                            f"(limit {real_risk_source.MAX_RISK_PCT}%). TradeSgnl and paper still opened normally.",
+                        )
+                    # risk_check is None (unreachable) -- fail closed, silently skip
+                    # this cycle. No alert spam for a routine "MT5 not up" case; the
+                    # existing heartbeat/giveback checks already surface real
+                    # connectivity problems with this account.
         open_symbols.add(symbol)
 
 
