@@ -20,16 +20,25 @@ Security: only reacts to a message from DISCORD_AUTHORIZED_USER_ID
 specifically -- anyone else typing a command in a shared server/channel
 is silently ignored (no reply, no hint the command exists).
 
-Two commands, two different scopes:
-  !closeall  -- close every open real position right now. Does NOT stop
-               new entries from resuming on the next qualifying signal.
-  !stopday   -- close every open real position AND pause new real entries
-               for the rest of today (both relays -- see
-               orchestrator.manual_stop_for_today()'s own docstring for
-               why this is a separate flag from the give-back breaker's).
+Three commands, three different scopes:
+  !closeall     -- close every open real position right now. Does NOT
+                  stop new entries from resuming on the next qualifying
+                  signal (any symbol, including the ones just closed).
+  !stopday      -- close every open real position AND pause new real
+                  entries for the rest of today (both relays -- see
+                  orchestrator.manual_stop_for_today()'s own docstring
+                  for why this is a separate flag from the give-back
+                  breaker's).
+  !close SYMBOL -- close only that one symbol's open position, e.g.
+                  "!close USDCHF". Nothing else is touched -- every other
+                  open symbol keeps running exactly as before, and this
+                  same symbol can open a fresh trade again on the very
+                  next qualifying signal. No block flag is set; this is
+                  strictly narrower than !closeall, not a variant of
+                  !stopday.
 
-Both are deliberately different from the give-back breaker: they act on
-BOTH real relays unconditionally, including TradeSgnl. The "TradeSgnl
+All three are deliberately different from the give-back breaker: they act
+on BOTH real relays unconditionally, including TradeSgnl. The "TradeSgnl
 must never be blocked by the give-back breaker" rule was specifically
 about an automatic P&L-based circuit breaker overriding a data-source
 account without asking. These are the opposite: a direct, in-the-moment
@@ -52,6 +61,7 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
 DISCORD_AUTHORIZED_USER_ID = int(os.getenv("DISCORD_AUTHORIZED_USER_ID", "0"))
 CLOSE_ALL_COMMAND = "!closeall"
 STOP_DAY_COMMAND = "!stopday"
+CLOSE_SYMBOL_PREFIX = "!close "
 
 _client = None  # type: Optional["discord.Client"]
 
@@ -84,18 +94,29 @@ def start() -> None:
         if message.author.id != DISCORD_AUTHORIZED_USER_ID:
             return
         content = message.content.strip().lower()
-        if content not in (CLOSE_ALL_COMMAND, STOP_DAY_COMMAND):
+
+        symbol: Optional[str] = None
+        if content in (CLOSE_ALL_COMMAND, STOP_DAY_COMMAND):
+            pass
+        elif content.startswith(CLOSE_SYMBOL_PREFIX):
+            from config import PAIRS
+
+            symbol = content[len(CLOSE_SYMBOL_PREFIX):].strip().upper()
+            if symbol not in PAIRS:
+                await message.channel.send(f"Unknown symbol {symbol!r} -- must be one of: {', '.join(PAIRS)}")
+                return
+        else:
             return
 
         from engine import orchestrator
 
         try:
-            if content == CLOSE_ALL_COMMAND:
-                result = await orchestrator.close_all_real_positions()
-                suffix = ""
-            else:
+            if content == STOP_DAY_COMMAND:
                 result = await orchestrator.manual_stop_for_today()
                 suffix = " New real entries are paused for the rest of today (both accounts)."
+            else:
+                result = await orchestrator.close_all_real_positions(symbol=symbol)
+                suffix = "" if symbol is None else " Everything else is untouched -- resumes normally."
         except Exception as exc:  # noqa: BLE001
             await message.channel.send(f"{content} failed: {exc}")
             return

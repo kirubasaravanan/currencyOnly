@@ -198,6 +198,19 @@ def register_routes(app: FastAPI) -> None:
         configured."""
         return await orchestrator.close_all_real_positions()
 
+    @app.post("/close-symbol/{symbol}")
+    async def close_symbol(symbol: str):
+        """Closes only this one symbol's open position on BOTH real
+        relays, verified the same way as /close-all -- but touches
+        nothing else. Every other open symbol keeps running as before,
+        and this same symbol can open a fresh trade again on the very
+        next qualifying signal; no block flag is set. Same action as
+        Discord's "!close SYMBOL"."""
+        symbol = symbol.upper()
+        if symbol not in PAIRS:
+            raise HTTPException(status_code=400, detail=f"unknown symbol, must be one of: {', '.join(PAIRS)}")
+        return await orchestrator.close_all_real_positions(symbol=symbol)
+
     @app.post("/stop-day")
     async def stop_day():
         """Closes every open position on BOTH real relays right now

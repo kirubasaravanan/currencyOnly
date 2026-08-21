@@ -234,22 +234,31 @@ def _positions_still_open_sync(symbols: List[str]) -> Dict[str, List[str]]:
     return still_open
 
 
-async def close_all_real_positions() -> Dict:
-    """Closes every currently open position on BOTH real relays right now,
-    then verifies against the actual accounts rather than trusting the
-    relay responses alone (see comment above). Paper is untouched -- it
-    stays a clean, continuous baseline, same as the give-back breaker.
-    Shared by discord_bot_listener.py's "!closeall", the /close-all and
-    /stop-day HTTP routes, and manual_stop_for_today() below, so there's
-    exactly one close-everything code path, not several.
+async def close_all_real_positions(symbol: Optional[str] = None) -> Dict:
+    """Closes open position(s) on BOTH real relays right now, then
+    verifies against the actual accounts rather than trusting the relay
+    responses alone (see comment above). Paper is untouched -- it stays a
+    clean, continuous baseline, same as the give-back breaker. Shared by
+    discord_bot_listener.py's "!closeall"/"!close SYMBOL", the /close-all,
+    /close-symbol/{symbol}, and /stop-day HTTP routes, and
+    manual_stop_for_today() below, so there's exactly one close code
+    path, not several.
+
+    symbol: if given, closes only that one symbol's open position(s) and
+    touches nothing else -- the system keeps running exactly as before
+    for every other symbol, and even this same symbol can open a fresh
+    trade again on the very next qualifying signal (no block flag is set
+    here, unlike manual_stop_for_today()). If None (the default), closes
+    everything, matching the prior behavior exactly.
 
     Returns {"closed_symbols": [...], "still_open": {"TradeSgnl": [...],
     "FundedNext": [...]}} -- a non-empty "still_open" list for an account
     means a genuine orphan (or, prefixed "UNVERIFIABLE", that the check
     itself couldn't run) and needs a human to look, not an assumption
     that closing succeeded."""
+    targets = [t for t in broker.open_positions if symbol is None or t["symbol"] == symbol]
     closed_symbols: List[str] = []
-    for t in list(broker.open_positions):
+    for t in list(targets):
         sent_tradesgnl = await tradesgnl_relay.send_close(t)
         sent_pineconnector = await pineconnector_relay.send_close(t)
         if sent_tradesgnl or sent_pineconnector:
