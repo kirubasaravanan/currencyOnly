@@ -144,36 +144,50 @@ async def alert_relay_failure(symbol: str, kind: str, command: str, relay: str =
     await _send_embed(embed)
 
 
-async def alert_sync_heartbeat(result: Dict) -> None:
+async def alert_sync_heartbeat(results_by_account: Dict) -> None:
     """Only called when trade_sync_heartbeat.run_heartbeat() found something
     worth surfacing (see orchestrator.py's dispatch) -- a clean check never
-    posts anything, so this channel doesn't get a message every 5 minutes."""
-    phantoms = result.get("direction1_confirmed_phantoms", [])
-    uncertain = result.get("direction1_uncertain", [])
-    still_open = result.get("direction2_still_open_on_real", [])
-    errors = result.get("errors", [])
+    posts anything, so this channel doesn't get a message every 5 minutes.
 
+    [UPDATED 2026-08-21] results_by_account is now {"TradeSgnl": {...},
+    "FundedNext": {...}} -- one heartbeat result dict per account. Also
+    reflects that the heartbeat now ACTS on confirmed desyncs instead of
+    only alerting, so the wording below describes what happened, not just
+    what was found -- see trade_sync_heartbeat.py's module docstring."""
     fields = []
-    for u in uncertain:
-        fields.append({
-            "name": f"🟡 {u['symbol']} may be desynced (paper open, can't confirm real side)",
-            "value": f"unresolved for {u['consecutive_checks']} consecutive checks (~{u['consecutive_checks']*5}min) -- reason: {u['reason']}, paper P&L ${u.get('internal_pnl', 0):.2f}",
-            "inline": False,
-        })
-    for p in phantoms:
-        fields.append({
-            "name": f"🟠 {p['symbol']} closed on real, still open in paper",
-            "value": f"real P&L ${p['real_pnl']:.2f} @ {p['real_close_time_utc']} (paper still tracking it live)",
-            "inline": False,
-        })
-    for s in still_open:
-        fields.append({
-            "name": f"🔴 {s['symbol']} closed in paper, still open on real (ticket {s['real_ticket']})",
-            "value": f"paper closed {s['paper_closed_at']} ({s['paper_close_reason']}) -- real position live P&L ${s['real_profit']:.2f}, {s['real_volume']} lots",
-            "inline": False,
-        })
-    for e in errors:
-        fields.append({"name": "⚠️ heartbeat check error", "value": e, "inline": False})
+    for account, result in results_by_account.items():
+        for u in result.get("uncertain", []):
+            fields.append({
+                "name": f"🟡 [{account}] {u['symbol']} may be desynced (paper open, can't confirm real side)",
+                "value": f"unresolved for {u['consecutive_checks']} consecutive checks (~{u['consecutive_checks']*5}min) -- reason: {u['reason']}, paper P&L ${u.get('internal_pnl', 0):.2f}",
+                "inline": False,
+            })
+        for p in result.get("direction1_closed_paper", []):
+            fields.append({
+                "name": f"🟠 [{account}] {p['symbol']} closed on real -- paper force-closed to match",
+                "value": f"real P&L ${p['real_pnl']:.2f} @ {p['real_close_time_utc']} (paper was still tracking it live before this)",
+                "inline": False,
+            })
+        for s in result.get("direction2_closed_real", []):
+            fields.append({
+                "name": f"🔴 [{account}] {s['symbol']} closed in paper -- real position closed to match (confirmed)",
+                "value": f"paper closed {s['paper_closed_at']} ({s['paper_close_reason']}) -- real ticket {s['real_ticket']} was live P&L ${s['real_profit']:.2f}, {s['real_volume']} lots, now verified gone",
+                "inline": False,
+            })
+        for s in result.get("direction2_close_unverified", []):
+            fields.append({
+                "name": f"🔴🔺 [{account}] {s['symbol']} closed in paper, real close attempted but UNVERIFIED (ticket {s['real_ticket']})",
+                "value": f"paper closed {s['paper_closed_at']} ({s['paper_close_reason']}) -- sent a close for real P&L ${s['real_profit']:.2f}, {s['real_volume']} lots, but couldn't confirm it actually closed. Check the account directly.",
+                "inline": False,
+            })
+        for m in result.get("lot_mismatches", []):
+            fields.append({
+                "name": f"🟣 [{account}] {m['symbol']} lot-size mismatch (partial-close desync, not auto-corrected)",
+                "value": f"paper shows {m['paper_lots']} lots, real ticket {m['real_ticket']} shows {m['real_volume']} lots -- one side's partial-close likely didn't relay",
+                "inline": False,
+            })
+        for e in result.get("errors", []):
+            fields.append({"name": f"⚠️ [{account}] heartbeat check error", "value": e, "inline": False})
 
     if not fields:
         return

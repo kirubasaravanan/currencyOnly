@@ -1,6 +1,7 @@
 """Trade sync heartbeat — bidirectional reconciliation between the paper
-broker's trade ledger and the real MT5 account (license 3116556667670,
-login 110875560) that tradesgnl_relay.py mirrors trades to.
+broker's trade ledger and BOTH real MT5 accounts this app relays to
+(TradeSgnl demo, license 3116556667670, login 110875560; PineConnector/
+FundedNext real challenge, login from FUNDEDNEXT_MT5_LOGIN).
 
 [ADDED 2026-08-17, explicit user instruction: "keep monitoring and let me
 know if anything else desyncs"] Prompted by a real, caught-live incident
@@ -14,23 +15,49 @@ an ongoing safety net for the same *class* of problem — any future bug,
 webhook drop, or broker-side rejection that leaves the two ledgers out of
 sync — rather than trusting that one fix covers every way it could recur.
 
-Ported from the sister Forex app's engine/trade_sync_heartbeat.py +
-mt5_reconcile.py (read directly via SSH, same source tradesgnl_relay.py's
-command grammar was ported from), simplified for this app's single-account,
-webhook-only setup: no mt5_ipc_lock (only one MT5 terminal is ever in play
-here, unlike the sister app's two), no mt5_direct (this app never calls
-mt5.order_send() — see tradesgnl_relay.py's own docstring), no
-EXCLUDED_SYMBOLS (every one of the 17 pairs is relay-eligible here).
+[UPGRADED 2026-08-21, explicit user instruction] Was alert-only in both
+directions since 2026-08-17. The user asked directly whether it actually
+does anything about a confirmed desync, and pointed out the honest answer
+("no, alert-only") wasn't good enough: since a real position can never be
+safely "reopened," the only sound fix is to bring BOTH sides down to
+whichever state is already confirmed-true, never to guess or fabricate one
+up. So now:
+  - Direction 1 (paper open, real CONFIRMED closed via a positively-matched
+    closing deal in MT5's own history): closes the PAPER trade to match,
+    using the real deal's own exit price.
+  - Direction 2 (paper closed, real still CONFIRMED open via a live
+    positions_get() read): sends a close for the REAL position to match
+    paper, then re-verifies it's actually gone before reporting success —
+    never trusts the relay's "sent" response alone, same "verify, don't
+    trust" convention as close_all_real_positions() in orchestrator.py.
+Both directions still only ever act on a CONFIRMED state — "uncertain"
+(missing-from-a-live-read only, no positively-matched deal) is still
+reported, never acted on. That distinction is deliberate, not timidity:
+the sister app's 2026-07-29 incident conflated "missing from a live read"
+with "confirmed closed" and force-closed 28 genuinely-open positions at a
+fabricated $0.00 during a connection outage. Acting on a POSITIVE match
+(a real closing deal found in history, or a real position genuinely alive
+in a fresh positions_get() read) carries none of that risk — it's not an
+inference from absence, it's reading what already, definitely happened.
 
-Two directions, both alert-only — this module NEVER force-closes anything,
-on either side. Direction 1 (paper open, real not open) only claims a
-confirmed phantom when a real closing deal is positively found in MT5's
-own history; absence from positions_get() alone is treated as "uncertain,
-keep watching," never acted on, matching the sister app's own hard lesson
-(its 2026-07-29 incident: conflating "missing from a live read" with
-"confirmed closed" force-closed 28 genuinely-open positions at a
-fabricated $0.00 during a connection outage). Direction 2 (paper closed,
-real still open) is exactly the EURUSD case above.
+Extended 2026-08-21 to cover FundedNext alongside TradeSgnl (previously
+TradeSgnl-only) — the real account had ZERO sync monitoring before this,
+despite being the one with actual financial consequences. FundedNext's
+account is shared with the sister Forex app's gold bridge (comment prefix
+"pineconnector_gold-"), so its real-position reads are filtered to our own
+tag prefix ("pineconnector-") — gold positions are invisible to this
+module by construction, same principle as real_giveback_source.py.
+
+Also added 2026-08-21: lot-size (partial-close) mismatch detection for
+positions open on both sides under the same tag — the case where paper
+took its 50%-at-TP1 partial but the real relay's partial-close command
+silently failed (or vice versa), which the old binary open/closed matching
+could never catch. DETECTION ONLY for now, not auto-corrected — reported
+via Discord so real frequency/pattern can be seen before deciding how to
+safely reduce the oversized side down to match (the same "only ever
+reduce toward a confirmed number, never fabricate one" principle would
+apply, but sourcing the correct partial-fill price needs more care than a
+same-day pass should rush).
 
 Grace period: any reconnect failure resets a "distrust findings" window,
 so a flapping MT5 connection doesn't get read as a wave of real problems.
@@ -38,21 +65,21 @@ so a flapping MT5 connection doesn't get read as a wave of real problems.
 
 from __future__ import annotations
 
+import asyncio
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional, Tuple
+from typing import Awaitable, Callable, Dict, List, Optional
 
 from engine.paper_broker import broker
-from engine.tradesgnl_relay import _comment_id, TRADESGNL_LICENSE_ID
-
-MT5_TERMINAL_PATH = r"C:\Users\Administrator\Pictures\Third Mt5\terminal64.exe"
-MT5_ACCOUNT_LOGIN = 110875560
+from engine.real_giveback_source import FUNDEDNEXT_MT5_TERMINAL_PATH, FUNDEDNEXT_MT5_LOGIN
+from engine.tradesgnl_relay import _comment_id as _tradesgnl_comment_id, send_close as _tradesgnl_send_close
+from engine.pineconnector_relay import _comment_id as _pineconnector_comment_id, send_close as _pineconnector_send_close
 
 # This demo account's server clock runs 3h ahead of true UTC (empirically
-# confirmed 2026-08-17 by comparing paper trades' own opened_at UTC
-# timestamps against MT5 positions_get()'s .time for the same trades —
-# GBPAUD/NZDUSD/EURGBP all matched +3:00:0x exactly). MT5's own
-# positions/history timestamps are all in this server time, not true UTC.
+# confirmed 2026-08-17 for TradeSgnl, and independently re-confirmed
+# 2026-08-20 for FundedNext too -- same value, different broker,
+# coincidence not an assumption; see real_giveback_source.py's docstring).
 MT5_SERVER_UTC_OFFSET = timedelta(hours=3)
 
 HEARTBEAT_ENABLED = True
@@ -60,53 +87,83 @@ HEARTBEAT_INTERVAL_SECONDS = 5 * 60
 GRACE_PERIOD_SECONDS = 10 * 60
 DIRECTION2_LOOKBACK_HOURS = 24
 DIRECTION2_REALERT_SECONDS = 60 * 60
-
-_last_unreachable_at: Optional[float] = None
-_direction2_last_alerted: Dict[int, float] = {}  # real_ticket -> ts
-
-# [ADD 2026-08-18, found live] direction1_uncertain findings were computed
-# but never actually surfaced anywhere -- discord_alerts.alert_sync_heartbeat
-# only ever read confirmed_phantoms/still_open_on_real/errors. A real
-# desync (AUDUSD: real MT5 hit its native SL ~3h before paper's own SL
-# check caught up) sat silently the entire time with zero Discord signal,
-# discovered only because the user asked directly. A single "uncertain"
-# reading is expected noise (grace period, a transient MT5 read hiccup) and
-# shouldn't page anyone -- but one that PERSISTS across multiple consecutive
-# checks is exactly the kind of "actually might be broken" signal this
-# heartbeat exists to catch. Tracks a streak per trade id; only surfaced
-# once it's been uncertain for UNCERTAIN_ALERT_STREAK consecutive checks.
 UNCERTAIN_ALERT_STREAK = 3  # 3 x 5min cadence = ~15 minutes of persistence
-_uncertain_streak: Dict[int, int] = {}  # trade_id -> consecutive uncertain count
+
+# MT5 volumes round to 0.01 lots -- this guards against float noise, not
+# real mismatches.
+LOT_MISMATCH_TOLERANCE = 0.011
+
+# Same value as orchestrator.py's CLOSE_VERIFY_DELAY_SECONDS -- kept as its
+# own constant here to avoid importing orchestrator.py (it imports this
+# module, not the other way around).
+CLOSE_VERIFY_DELAY_SECONDS = 5
 
 
-def _in_grace_period() -> bool:
-    return _last_unreachable_at is not None and (time.time() - _last_unreachable_at) < GRACE_PERIOD_SECONDS
+@dataclass
+class _AccountState:
+    label: str
+    terminal_path: str
+    account_login: int
+    comment_id_fn: Callable[[str, str], str]
+    send_close: Callable[[Dict], "Awaitable[bool]"]
+    # Set only for accounts that can hold positions that AREN'T ours (the
+    # FundedNext terminal also carries the sister app's gold bridge) --
+    # None means "every open position on this account is ours," no filter.
+    own_tag_prefix: Optional[str] = None
+
+    last_unreachable_at: Optional[float] = None
+    uncertain_streak: Dict[int, int] = field(default_factory=dict)
+    direction2_last_alerted: Dict[int, float] = field(default_factory=dict)
+
+    def in_grace_period(self) -> bool:
+        return self.last_unreachable_at is not None and (time.time() - self.last_unreachable_at) < GRACE_PERIOD_SECONDS
+
+    def mark_unreachable(self) -> None:
+        self.last_unreachable_at = time.time()
+
+    def terminal_running(self) -> bool:
+        """True only if the terminal is already running on its own --
+        mt5.initialize() will silently LAUNCH it otherwise, which this
+        heartbeat must never do (it should only ever piggyback on a
+        terminal already open for real trading)."""
+        import psutil
+        try:
+            for proc in psutil.process_iter(["name", "exe"]):
+                if proc.info["name"] == "terminal64.exe" and proc.info["exe"] == self.terminal_path:
+                    return True
+            return False
+        except Exception:  # noqa: BLE001
+            return False
+
+    def connect(self, mt5mod) -> bool:
+        if not mt5mod.initialize(path=self.terminal_path):
+            return False
+        acc = mt5mod.account_info()
+        return acc is not None and acc.login == self.account_login
+
+    def is_ours(self, comment: str) -> bool:
+        return comment.startswith(self.own_tag_prefix) if self.own_tag_prefix else True
 
 
-def _mark_unreachable() -> None:
-    global _last_unreachable_at
-    _last_unreachable_at = time.time()
+TRADESGNL_ACCOUNT = _AccountState(
+    label="TradeSgnl",
+    terminal_path=r"C:\Users\Administrator\Pictures\Third Mt5\terminal64.exe",
+    account_login=110875560,
+    comment_id_fn=_tradesgnl_comment_id,
+    send_close=_tradesgnl_send_close,
+    own_tag_prefix=None,
+)
 
+FUNDEDNEXT_ACCOUNT = _AccountState(
+    label="FundedNext",
+    terminal_path=FUNDEDNEXT_MT5_TERMINAL_PATH,
+    account_login=FUNDEDNEXT_MT5_LOGIN,
+    comment_id_fn=_pineconnector_comment_id,
+    send_close=_pineconnector_send_close,
+    own_tag_prefix="pineconnector-",
+)
 
-def _terminal_running() -> bool:
-    """True only if the terminal is already running on its own -- mt5.initialize()
-    will silently LAUNCH it otherwise, which this heartbeat must never do
-    (it should only ever piggyback on a terminal already open for real trading)."""
-    import psutil
-    try:
-        for proc in psutil.process_iter(["name", "exe"]):
-            if proc.info["name"] == "terminal64.exe" and proc.info["exe"] == MT5_TERMINAL_PATH:
-                return True
-        return False
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _connect(mt5mod) -> bool:
-    if not mt5mod.initialize(path=MT5_TERMINAL_PATH):
-        return False
-    acc = mt5mod.account_info()
-    return acc is not None and acc.login == MT5_ACCOUNT_LOGIN
+ALL_ACCOUNTS: List[_AccountState] = [TRADESGNL_ACCOUNT, FUNDEDNEXT_ACCOUNT]
 
 
 def _to_true_utc(server_ts: float) -> datetime:
@@ -141,21 +198,28 @@ def _find_closing_deal(mt5mod, symbol: str, tag: str, opened_at_true_utc: dateti
     return closes[-1]
 
 
-def _check() -> Dict:
-    """Never raises -- a failure here must not take down the scan loop."""
+def _detect_sync(acct: _AccountState) -> Dict:
+    """All MT5 I/O and decision-making for one account. Never raises -- a
+    failure here must not take down the scan loop. Read-only: makes no
+    changes itself, only reports what's found and what SHOULD be done --
+    run_heartbeat_for() below performs the actual actions, since sending a
+    real close command is an async webhook call that can't happen inside
+    this blocking, thread-run function."""
     result: Dict = {
+        "account": acct.label,
         "reachable": False,
-        "direction1_confirmed_phantoms": [],
-        "direction1_uncertain": [],
-        "direction2_still_open_on_real": [],
+        "confirmed_phantoms": [],
+        "uncertain": [],
+        "still_open_on_real": [],
+        "lot_mismatches": [],
         "errors": [],
     }
-    if not TRADESGNL_LICENSE_ID:
-        result["errors"].append("TRADESGNL_LICENSE_ID not configured -- nothing to reconcile against")
+    if not acct.account_login:
+        result["errors"].append(f"{acct.label}: no account login configured -- nothing to reconcile against")
         return result
-    if not _terminal_running():
-        _mark_unreachable()
-        result["errors"].append("MT5 terminal not running -- skipped (never auto-launches it)")
+    if not acct.terminal_running():
+        acct.mark_unreachable()
+        result["errors"].append(f"{acct.label}: MT5 terminal not running -- skipped (never auto-launches it)")
         return result
 
     try:
@@ -164,30 +228,38 @@ def _check() -> Dict:
         result["errors"].append("MetaTrader5 package not installed")
         return result
 
-    if not _connect(mt5):
-        _mark_unreachable()
-        result["errors"].append(f"connect/verify failed: {mt5.last_error()}")
+    if not acct.connect(mt5):
+        acct.mark_unreachable()
+        result["errors"].append(f"{acct.label}: connect/verify failed: {mt5.last_error()}")
         return result
 
     result["reachable"] = True
-    in_grace = _in_grace_period()
+    in_grace = acct.in_grace_period()
 
     try:
-        real_positions = mt5.positions_get() or ()
+        real_positions = [p for p in (mt5.positions_get() or ()) if acct.is_ours(p.comment)]
         real_open_tags = {(p.symbol, p.comment) for p in real_positions}
         real_open_by_tag = {(p.symbol, p.comment): p for p in real_positions}
         internal_open_tags = {
-            (t.get("symbol"), _comment_id(t.get("symbol"), t.get("side", "")))
+            (t.get("symbol"), acct.comment_id_fn(t.get("symbol"), t.get("side", "")))
             for t in broker.open_positions
         }
 
-        # --- Direction 1: paper open, real not open ---
+        # --- Direction 1 (paper open, real not) + lot-mismatch check for
+        # positions genuinely open on both sides ---
         still_uncertain_ids = set()
         for t in list(broker.open_positions):
             symbol = t.get("symbol")
             side = t.get("side", "")
-            tag = _comment_id(symbol, side)
+            tag = acct.comment_id_fn(symbol, side)
             if (symbol, tag) in real_open_tags:
+                real_pos = real_open_by_tag[(symbol, tag)]
+                if abs(real_pos.volume - t.get("lots", 0.0)) > LOT_MISMATCH_TOLERANCE:
+                    result["lot_mismatches"].append({
+                        "trade_id": t["id"], "symbol": symbol, "side": side,
+                        "paper_lots": t.get("lots"), "real_volume": real_pos.volume,
+                        "real_ticket": real_pos.ticket,
+                    })
                 continue  # genuinely open on both sides
 
             opened_at_str = t.get("opened_at")
@@ -201,10 +273,10 @@ def _check() -> Dict:
             deal = _find_closing_deal(mt5, symbol, tag, opened_at)
             if deal is None or in_grace:
                 still_uncertain_ids.add(t["id"])
-                streak = _uncertain_streak.get(t["id"], 0) + 1
-                _uncertain_streak[t["id"]] = streak
+                streak = acct.uncertain_streak.get(t["id"], 0) + 1
+                acct.uncertain_streak[t["id"]] = streak
                 if streak >= UNCERTAIN_ALERT_STREAK:
-                    result["direction1_uncertain"].append({
+                    result["uncertain"].append({
                         "symbol": symbol, "side": side,
                         "internal_pnl": t.get("pnl"),
                         "reason": "in_grace_period" if in_grace else "no_matching_closing_deal_found",
@@ -212,8 +284,8 @@ def _check() -> Dict:
                     })
                 continue
 
-            _uncertain_streak.pop(t["id"], None)
-            result["direction1_confirmed_phantoms"].append({
+            acct.uncertain_streak.pop(t["id"], None)
+            result["confirmed_phantoms"].append({
                 "trade_id": t["id"], "symbol": symbol, "side": side,
                 "internal_pnl": t.get("pnl"),
                 "real_exit_price": deal.price, "real_pnl": round(deal.profit, 2),
@@ -225,9 +297,9 @@ def _check() -> Dict:
         # or has resolved back to genuinely-open-on-both -- otherwise a
         # stale streak could immediately re-trigger an alert for a
         # DIFFERENT, unrelated later trade that happens to reuse the same id.
-        for stale_id in list(_uncertain_streak):
+        for stale_id in list(acct.uncertain_streak):
             if stale_id not in still_uncertain_ids:
-                _uncertain_streak.pop(stale_id, None)
+                acct.uncertain_streak.pop(stale_id, None)
 
         # --- Direction 2: paper closed (recently), real still open ---
         if not in_grace:
@@ -245,7 +317,7 @@ def _check() -> Dict:
                     closed_at = closed_at.replace(tzinfo=timezone.utc)
                 if closed_at < cutoff:
                     continue
-                tag = _comment_id(symbol, t.get("side", ""))
+                tag = acct.comment_id_fn(symbol, t.get("side", ""))
                 if (symbol, tag) in internal_open_tags:
                     # A newer paper position with the same symbol+side is
                     # open right now -- the real position matches THAT one,
@@ -255,28 +327,94 @@ def _check() -> Dict:
                 real_pos = real_open_by_tag.get((symbol, tag))
                 if real_pos is None:
                     continue  # genuinely closed on both sides -- good
-                last_alerted = _direction2_last_alerted.get(real_pos.ticket, 0.0)
+                last_alerted = acct.direction2_last_alerted.get(real_pos.ticket, 0.0)
                 if time.time() - last_alerted < DIRECTION2_REALERT_SECONDS:
                     continue
-                _direction2_last_alerted[real_pos.ticket] = time.time()
-                result["direction2_still_open_on_real"].append({
+                acct.direction2_last_alerted[real_pos.ticket] = time.time()
+                result["still_open_on_real"].append({
                     "symbol": symbol, "side": t.get("side"),
+                    "paper_trade": t,
                     "paper_closed_at": closed_at_str, "paper_close_reason": t.get("reason"),
                     "real_ticket": real_pos.ticket, "real_profit": round(real_pos.profit, 2),
                     "real_volume": real_pos.volume,
                 })
     except Exception as exc:  # noqa: BLE001
-        result["errors"].append(f"heartbeat check error: {exc}")
+        result["errors"].append(f"{acct.label}: heartbeat check error: {exc}")
     finally:
         mt5.shutdown()
 
     return result
 
 
-def run_heartbeat() -> Dict:
-    """Synchronous -- call via asyncio.to_thread (MT5's Python API is
-    blocking). Alert-only: never closes anything on either side. Returns
-    the check result so the caller can decide whether it's worth alerting."""
+def _verify_ticket_closed_sync(acct: _AccountState, ticket: int) -> Optional[bool]:
+    """True if the ticket is genuinely gone, False if still found open,
+    None if unreachable (can't verify either way -- caller must not assume
+    success from a None here, same "verify, don't trust" principle as
+    orchestrator.py's own _positions_still_open_sync)."""
+    if not acct.terminal_running():
+        return None
+    try:
+        import MetaTrader5 as mt5
+    except ImportError:
+        return None
+    if not acct.connect(mt5):
+        return None
+    try:
+        positions = mt5.positions_get(ticket=ticket)
+        return not positions
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        mt5.shutdown()
+
+
+async def run_heartbeat_for(acct: _AccountState, prices: Optional[Dict[str, float]] = None) -> Dict:
+    """Async entry point for one account. Runs the blocking detection via
+    asyncio.to_thread, then acts on CONFIRMED findings only -- see module
+    docstring for exactly what "confirmed" means and why "uncertain"
+    findings are still never acted on.
+
+    prices: this cycle's live price snapshot (same dict orchestrator.py's
+    _scan_once already has), passed through to broker.close_trade() so a
+    direction-1 sync-close prices correctly on cross/JPY pairs instead of
+    silently defaulting to a 1.0 USD conversion rate."""
     if not HEARTBEAT_ENABLED:
         return {"disabled": True}
-    return _check()
+
+    result = await asyncio.to_thread(_detect_sync, acct)
+    result["direction1_closed_paper"] = []
+    result["direction2_closed_real"] = []
+    result["direction2_close_unverified"] = []
+
+    for phantom in result["confirmed_phantoms"]:
+        closed = broker.close_trade(
+            phantom["trade_id"], phantom["real_exit_price"],
+            reason="real_sync_close", prices=prices,
+        )
+        if closed is not None:
+            result["direction1_closed_paper"].append(phantom)
+
+    for still_open in result["still_open_on_real"]:
+        sent = await acct.send_close(still_open["paper_trade"])
+        if not sent:
+            result["direction2_close_unverified"].append(still_open)
+            continue
+        await asyncio.sleep(CLOSE_VERIFY_DELAY_SECONDS)
+        gone = await asyncio.to_thread(_verify_ticket_closed_sync, acct, still_open["real_ticket"])
+        if gone:
+            result["direction2_closed_real"].append(still_open)
+        else:
+            result["direction2_close_unverified"].append(still_open)
+
+    return result
+
+
+async def run_heartbeat(prices: Optional[Dict[str, float]] = None) -> Dict:
+    """Runs both accounts. Returns {"TradeSgnl": {...}, "FundedNext": {...}}
+    (or {"disabled": True} if HEARTBEAT_ENABLED is False)."""
+    if not HEARTBEAT_ENABLED:
+        return {"disabled": True}
+    results: Dict = {}
+    for acct in ALL_ACCOUNTS:
+        results[acct.label] = await run_heartbeat_for(acct, prices)
+    return results

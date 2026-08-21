@@ -68,14 +68,22 @@ _last_eod_date: Optional[str] = None
 async def _process_new_closed_trades(now: datetime) -> None:
     """Diffs broker.closed_trades against the last-seen count to find newly
     closed trades since the previous scan, fires exit alerts for each, and
-    buckets them into the running session/day accumulators."""
+    buckets them into the running session/day accumulators.
+
+    [ADD 2026-08-21] reason == "real_sync_close" (trade_sync_heartbeat.py's
+    direction-1 remediation: paper force-closed to match a REAL side
+    already confirmed closed via a positively-matched MT5 deal) skips the
+    two relay send_close() calls below -- sending a close command for a
+    position that's already closed on that same real side is redundant at
+    best. The Discord "trade closed" notice still fires either way."""
     global _alerted_closed_count
     new_trades = broker.closed_trades[_alerted_closed_count:]
     _alerted_closed_count = len(broker.closed_trades)
     for t in new_trades:
         await discord_alerts.alert_trade_closed(t)
-        await tradesgnl_relay.send_close(t)
-        await pineconnector_relay.send_close(t)
+        if t.get("reason") != "real_sync_close":
+            await tradesgnl_relay.send_close(t)
+            await pineconnector_relay.send_close(t)
         _session_trades.append(t)
         _day_trades.append(t)
 
@@ -512,18 +520,25 @@ async def _check_sod_status(now: datetime) -> None:
 _last_heartbeat_at = 0.0
 
 
-async def _check_sync_heartbeat() -> None:
+async def _check_sync_heartbeat(prices: Optional[Dict[str, float]] = None) -> None:
     """Own cadence, separate from the 60s scan loop -- MT5 reads are
     blocking, so this runs in a thread and only every few minutes, not
     every scan. See trade_sync_heartbeat.py for what this actually checks
-    and why (explicit user request, 2026-08-17: "keep monitoring and let
-    me know if anything else desyncs")."""
+    (both TradeSgnl and FundedNext, since 2026-08-21) and why (explicit
+    user request, 2026-08-17: "keep monitoring and let me know if anything
+    else desyncs"; upgraded 2026-08-21 from alert-only to actually closing
+    the confirmed-behind side to match).
+
+    prices: this cycle's live price snapshot, threaded through so a
+    direction-1 sync-close (paper force-closed to match a confirmed real
+    exit) prices correctly on cross/JPY pairs -- see
+    trade_sync_heartbeat.run_heartbeat_for's docstring."""
     global _last_heartbeat_at
     now_ts = datetime.now(timezone.utc).timestamp()
     if now_ts - _last_heartbeat_at < trade_sync_heartbeat.HEARTBEAT_INTERVAL_SECONDS:
         return
     _last_heartbeat_at = now_ts
-    result = await asyncio.to_thread(trade_sync_heartbeat.run_heartbeat)
+    result = await trade_sync_heartbeat.run_heartbeat(prices)
     if result.get("disabled"):
         return
     await discord_alerts.alert_sync_heartbeat(result)
@@ -557,7 +572,7 @@ async def _scan_once() -> None:
     await _check_session_rollover(now)
     await _check_eod_rollover(now)
     await _check_sod_status(now)
-    await _check_sync_heartbeat()
+    await _check_sync_heartbeat(prices)
 
     ranking = currency_strength.compute_ranking({s: f.get("1h") for s, f in frames_by_symbol.items()})
 
