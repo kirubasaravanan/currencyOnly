@@ -169,32 +169,109 @@ def _save_manual_block_date(date_str: str) -> None:
         json.dump({"blocked_date": date_str}, f)
 
 
-async def close_all_real_positions() -> List[str]:
-    """Closes every currently open position on BOTH real relays right now.
-    Paper is untouched -- see module docstring above. Returns the symbols
-    that closed on at least one relay (a trade whose entry was never
-    confirmed on either relay correctly no-ops here too, via the same
-    _confirmed_open_ids guard both relays already use elsewhere). Shared
-    by discord_bot_listener.py's "!closeall" and manual_stop_for_today()
-    below, so there's exactly one close-everything code path, not three."""
+# [ADD 2026-08-21, explicit user instruction, prompted by a real incident
+# the same day] A relay reporting "sent (200)" only means PineConnector's
+# cloud service ACCEPTED the command -- it does NOT prove the EA actually
+# executed it on the broker. Confirmed happening for real: a USDCHF entry
+# logged a genuine MT5 deal on the FundedNext account, then vanished with
+# zero exit deal anywhere in a 7-day window -- our own _confirmed_open_ids
+# bookkeeping had no way to know. So close_all_real_positions() below
+# doesn't just trust each relay's response; it re-reads BOTH real
+# accounts' actual positions afterward and reports anything still open as
+# a genuine orphan, never assumed clear from the relay response alone.
+CLOSE_VERIFY_DELAY_SECONDS = 5  # let the EA actually process the close before re-reading
+
+
+def _positions_still_open_sync(symbols: List[str]) -> Dict[str, List[str]]:
+    """Synchronous -- call via asyncio.to_thread (MT5's API is blocking).
+    Returns {"TradeSgnl": [...], "FundedNext": [...]} of symbols from
+    `symbols` still genuinely open on each account. Never launches a
+    terminal that isn't already running, and never trusts a connection
+    without verifying the login matches -- same conventions as
+    trade_sync_heartbeat.py and real_giveback_source.py. A connection or
+    read failure reports "UNVERIFIABLE (...)" rather than silently
+    claiming "clear" -- an unconfirmed account must never be read as safe."""
+    still_open: Dict[str, List[str]] = {"TradeSgnl": [], "FundedNext": []}
+    if not symbols:
+        return still_open
+
+    try:
+        import MetaTrader5 as mt5
+        import psutil
+    except ImportError as exc:
+        msg = f"UNVERIFIABLE ({exc})"
+        return {"TradeSgnl": [msg], "FundedNext": [msg]}
+
+    accounts = [
+        ("TradeSgnl", trade_sync_heartbeat.MT5_TERMINAL_PATH, trade_sync_heartbeat.MT5_ACCOUNT_LOGIN),
+        ("FundedNext", real_giveback_source.FUNDEDNEXT_MT5_TERMINAL_PATH, real_giveback_source.FUNDEDNEXT_MT5_LOGIN),
+    ]
+    for name, path, login in accounts:
+        if not login:
+            continue  # not configured yet (e.g. FundedNext pre-swap) -- nothing to verify there
+        try:
+            running = any(
+                p.info["name"] == "terminal64.exe" and p.info["exe"] == path
+                for p in psutil.process_iter(["name", "exe"])
+            )
+            if not running:
+                still_open[name] = ["UNVERIFIABLE (terminal not running)"]
+                continue
+            if not mt5.initialize(path=path):
+                still_open[name] = [f"UNVERIFIABLE (connect failed: {mt5.last_error()})"]
+                continue
+            acc = mt5.account_info()
+            if acc is None or acc.login != login:
+                still_open[name] = ["UNVERIFIABLE (account mismatch)"]
+                continue
+            positions = mt5.positions_get() or ()
+            open_symbols = {p.symbol for p in positions}
+            still_open[name] = [s for s in symbols if s in open_symbols]
+        except Exception as exc:  # noqa: BLE001
+            still_open[name] = [f"UNVERIFIABLE ({exc})"]
+        finally:
+            mt5.shutdown()
+    return still_open
+
+
+async def close_all_real_positions() -> Dict:
+    """Closes every currently open position on BOTH real relays right now,
+    then verifies against the actual accounts rather than trusting the
+    relay responses alone (see comment above). Paper is untouched -- it
+    stays a clean, continuous baseline, same as the give-back breaker.
+    Shared by discord_bot_listener.py's "!closeall", the /close-all and
+    /stop-day HTTP routes, and manual_stop_for_today() below, so there's
+    exactly one close-everything code path, not several.
+
+    Returns {"closed_symbols": [...], "still_open": {"TradeSgnl": [...],
+    "FundedNext": [...]}} -- a non-empty "still_open" list for an account
+    means a genuine orphan (or, prefixed "UNVERIFIABLE", that the check
+    itself couldn't run) and needs a human to look, not an assumption
+    that closing succeeded."""
     closed_symbols: List[str] = []
     for t in list(broker.open_positions):
         sent_tradesgnl = await tradesgnl_relay.send_close(t)
         sent_pineconnector = await pineconnector_relay.send_close(t)
         if sent_tradesgnl or sent_pineconnector:
             closed_symbols.append(t["symbol"])
-    return closed_symbols
+
+    if not closed_symbols:
+        return {"closed_symbols": [], "still_open": {"TradeSgnl": [], "FundedNext": []}}
+
+    await asyncio.sleep(CLOSE_VERIFY_DELAY_SECONDS)
+    still_open = await asyncio.to_thread(_positions_still_open_sync, closed_symbols)
+    return {"closed_symbols": closed_symbols, "still_open": still_open}
 
 
-async def manual_stop_for_today() -> List[str]:
+async def manual_stop_for_today() -> Dict:
     """The user's manual "close everything and pause for today" command.
     See module comment above for why this is a separate flag from the
     give-back breaker's, blocking both relays unconditionally."""
     global _manual_block_date
-    closed_symbols = await close_all_real_positions()
+    result = await close_all_real_positions()
     _manual_block_date = _current_ist_date
     _save_manual_block_date(_current_ist_date)
-    return closed_symbols
+    return result
 
 
 async def _check_daily_giveback_breaker() -> None:

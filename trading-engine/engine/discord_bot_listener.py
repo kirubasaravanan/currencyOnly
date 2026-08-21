@@ -91,21 +91,32 @@ def start() -> None:
 
         try:
             if content == CLOSE_ALL_COMMAND:
-                closed = await orchestrator.close_all_real_positions()
+                result = await orchestrator.close_all_real_positions()
                 suffix = ""
             else:
-                closed = await orchestrator.manual_stop_for_today()
+                result = await orchestrator.manual_stop_for_today()
                 suffix = " New real entries are paused for the rest of today (both accounts)."
         except Exception as exc:  # noqa: BLE001
             await message.channel.send(f"{content} failed: {exc}")
             return
 
+        closed = result["closed_symbols"]
+        still_open = result["still_open"]
+        orphans = {name: syms for name, syms in still_open.items() if syms}
+
         if closed:
+            base = f"Sent close for {len(closed)} position(s): {', '.join(closed)}."
+        else:
+            base = "No open real positions to close."
+
+        if orphans:
+            orphan_lines = "; ".join(f"{name}: {', '.join(syms)}" for name, syms in orphans.items())
             await message.channel.send(
-                f"Closed {len(closed)} position(s) on both real accounts: {', '.join(closed)}.{suffix}"
+                f"{base}{suffix}\n⚠️ STILL OPEN after verification -- check manually: {orphan_lines}"
             )
         else:
-            await message.channel.send(f"No open real positions to close.{suffix}")
+            confirmed = " Verified clear on both real accounts." if closed else ""
+            await message.channel.send(f"{base}{suffix}{confirmed}")
 
     async def _run() -> None:
         try:

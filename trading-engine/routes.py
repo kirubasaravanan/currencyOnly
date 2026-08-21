@@ -187,6 +187,27 @@ def register_routes(app: FastAPI) -> None:
         config.state.exit_mode = req.exit_mode
         return {"exit_mode": config.state.exit_mode}
 
+    @app.post("/close-all")
+    async def close_all():
+        """Closes every open position on BOTH real relays right now and
+        verifies against the actual accounts afterward -- see
+        orchestrator.close_all_real_positions()'s docstring. Does NOT
+        pause new entries; those resume normally on the next qualifying
+        signal. Paper is untouched. Same action as Discord's "!closeall",
+        exposed here so it's triggerable without the Discord bot
+        configured."""
+        return await orchestrator.close_all_real_positions()
+
+    @app.post("/stop-day")
+    async def stop_day():
+        """Closes every open position on BOTH real relays right now
+        (verified, not just trusted) AND pauses new real entries on both
+        accounts for the rest of today (IST) -- see
+        orchestrator.manual_stop_for_today()'s docstring for how this
+        differs from the automatic give-back breaker. Paper is untouched.
+        Same action as Discord's "!stopday"."""
+        return await orchestrator.manual_stop_for_today()
+
     @app.post("/real-relay")
     async def set_real_relay(req: RealRelayRequest):
         """Manual master kill-switch for new real-money entries (TradeSgnl,
