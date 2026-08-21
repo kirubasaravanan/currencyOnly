@@ -137,6 +137,66 @@ def _save_giveback_triggered_date(date_str: str) -> None:
         json.dump({"triggered_date": date_str}, f)
 
 
+
+# [ADD 2026-08-21, explicit user instruction] A manual counterpart to the
+# give-back breaker above: "close everything and pause entries for today"
+# triggered BY THE USER in the moment (e.g. a big move that won't last),
+# not by an automatic P&L threshold. Deliberately a SEPARATE flag from
+# _giveback_triggered_date, not a reuse of it, because the two must block
+# different scopes: the automatic breaker exists specifically to protect
+# the FundedNext account and, per explicit instruction, must never touch
+# TradeSgnl; this one is a direct decision from the account owner, so it
+# blocks BOTH relays unconditionally -- same reasoning already applied to
+# discord_bot_listener.py's "!closeall" (paper is untouched either way,
+# staying a clean, continuous baseline). Same restart-persistence pattern
+# as the give-back flag, same natural reset at IST midnight.
+_manual_block_date: Optional[str] = None
+_MANUAL_BLOCK_STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "storage", "manual_block_state.json")
+
+
+def _load_manual_block_date() -> Optional[str]:
+    try:
+        with open(os.path.abspath(_MANUAL_BLOCK_STATE_FILE)) as f:
+            return json.load(f).get("blocked_date")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _save_manual_block_date(date_str: str) -> None:
+    path = os.path.abspath(_MANUAL_BLOCK_STATE_FILE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump({"blocked_date": date_str}, f)
+
+
+async def close_all_real_positions() -> List[str]:
+    """Closes every currently open position on BOTH real relays right now.
+    Paper is untouched -- see module docstring above. Returns the symbols
+    that closed on at least one relay (a trade whose entry was never
+    confirmed on either relay correctly no-ops here too, via the same
+    _confirmed_open_ids guard both relays already use elsewhere). Shared
+    by discord_bot_listener.py's "!closeall" and manual_stop_for_today()
+    below, so there's exactly one close-everything code path, not three."""
+    closed_symbols: List[str] = []
+    for t in list(broker.open_positions):
+        sent_tradesgnl = await tradesgnl_relay.send_close(t)
+        sent_pineconnector = await pineconnector_relay.send_close(t)
+        if sent_tradesgnl or sent_pineconnector:
+            closed_symbols.append(t["symbol"])
+    return closed_symbols
+
+
+async def manual_stop_for_today() -> List[str]:
+    """The user's manual "close everything and pause for today" command.
+    See module comment above for why this is a separate flag from the
+    give-back breaker's, blocking both relays unconditionally."""
+    global _manual_block_date
+    closed_symbols = await close_all_real_positions()
+    _manual_block_date = _current_ist_date
+    _save_manual_block_date(_current_ist_date)
+    return closed_symbols
+
+
 async def _check_daily_giveback_breaker() -> None:
     global _giveback_triggered_date, _last_giveback_check_at
     if _giveback_triggered_date == _current_ist_date:
@@ -359,21 +419,23 @@ async def _scan_once() -> None:
         trade = broker.open_trade(signal, sizing["lots"])
         if trade is not None:
             await discord_alerts.alert_trade_opened(trade)
-            # Paper always opens regardless of either gate below (per
+            # Paper always opens regardless of any gate below (per
             # explicit user instruction, it stays a clean, continuous
             # baseline) -- only the real relay sends are ever suppressed.
             # The two relays are gated INDEPENDENTLY, not together:
-            #   - TradeSgnl: only the manual real_relay_enabled switch.
-            #     Never touched by the give-back breaker -- explicit user
-            #     instruction, 2026-08-20: "tradsgnl account should not be
-            #     blocked by the Daily giveback limit". It's a deliberately
-            #     unconstrained data source, not a party to FundedNext's
-            #     own risk limit.
+            #   - TradeSgnl: the manual real_relay_enabled switch, plus
+            #     _manual_block_date (the user's own "!stopday" command).
+            #     Never touched by the automatic give-back breaker --
+            #     explicit user instruction, 2026-08-20: "tradsgnl account
+            #     should not be blocked by the Daily giveback limit". It's
+            #     a deliberately unconstrained data source, not a party to
+            #     FundedNext's own automatic risk limit -- but a direct,
+            #     in-the-moment decision from the account owner is a
+            #     different kind of thing entirely, so it DOES apply here.
             #   - PineConnector (the FundedNext-connected relay): the same
-            #     manual switch AND the give-back breaker, since that
-            #     breaker's whole purpose is protecting this specific
-            #     account.
-            if config.state.real_relay_enabled:
+            #     manual switch, PLUS the automatic give-back breaker
+            #     (protects this specific account), PLUS _manual_block_date.
+            if config.state.real_relay_enabled and _manual_block_date != _current_ist_date:
                 await tradesgnl_relay.send_entry(trade)
                 if _giveback_triggered_date != _current_ist_date:
                     await pineconnector_relay.send_entry(trade)
@@ -452,7 +514,7 @@ async def start() -> None:
         # start-of-day status message (if already past 05:25 IST) or
         # re-fire a risk-limit-breach alert for a problem that was already
         # reported before the restart.
-        global _last_sod_date, _last_risk_block_reason, _last_eod_date, _giveback_triggered_date
+        global _last_sod_date, _last_risk_block_reason, _last_eod_date, _giveback_triggered_date, _manual_block_date
         if _ist_minutes_of_day(now) >= SOD_TRIGGER_MINUTES:
             _last_sod_date = _ist_date_str(now)
         # [FIX 2026-08-18, found live -- user reported the EOD summary firing
@@ -468,6 +530,7 @@ async def start() -> None:
         _last_risk_block_reason = startup_risk_check.get("reason") if not startup_risk_check["allowed"] else None
 
         _giveback_triggered_date = _load_giveback_triggered_date()
+        _manual_block_date = _load_manual_block_date()
 
         _task = asyncio.create_task(_loop())
 
