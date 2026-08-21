@@ -189,22 +189,23 @@ def register_routes(app: FastAPI) -> None:
 
     @app.post("/close-all")
     async def close_all():
-        """Closes every open position on BOTH real relays right now and
-        verifies against the actual accounts afterward -- see
-        orchestrator.close_all_real_positions()'s docstring. Does NOT
-        pause new entries; those resume normally on the next qualifying
-        signal. Paper is untouched. Same action as Discord's "!closeall",
-        exposed here so it's triggerable without the Discord bot
-        configured."""
+        """Closes every open position on PineConnector (FundedNext) right
+        now and verifies against the actual account afterward -- see
+        orchestrator.close_all_real_positions()'s docstring. TradeSgnl is
+        never touched (demo-account data feed, no real money to protect).
+        Does NOT pause new entries; those resume normally on the next
+        qualifying signal. Paper is untouched. Same action as Discord's
+        "!closeall", exposed here so it's triggerable without the Discord
+        bot configured."""
         return await orchestrator.close_all_real_positions()
 
     @app.post("/close-symbol/{symbol}")
     async def close_symbol(symbol: str):
-        """Closes only this one symbol's open position on BOTH real
-        relays, verified the same way as /close-all -- but touches
-        nothing else. Every other open symbol keeps running as before,
-        and this same symbol can open a fresh trade again on the very
-        next qualifying signal; no block flag is set. Same action as
+        """Closes only this one symbol's open position on PineConnector,
+        verified the same way as /close-all -- but touches nothing else
+        (TradeSgnl included). Every other open symbol keeps running as
+        before, and this same symbol can open a fresh trade again on the
+        very next qualifying signal; no block flag is set. Same action as
         Discord's "!close SYMBOL"."""
         symbol = symbol.upper()
         if symbol not in PAIRS:
@@ -213,12 +214,13 @@ def register_routes(app: FastAPI) -> None:
 
     @app.post("/stop-day")
     async def stop_day():
-        """Closes every open position on BOTH real relays right now
-        (verified, not just trusted) AND pauses new real entries on both
-        accounts for the rest of today (IST) -- see
-        orchestrator.manual_stop_for_today()'s docstring for how this
-        differs from the automatic give-back breaker. Paper is untouched.
-        Same action as Discord's "!stopday"."""
+        """Closes every open position on PineConnector right now (verified,
+        not just trusted) AND pauses new PineConnector entries for the
+        rest of today (IST) -- see orchestrator.manual_stop_for_today()'s
+        docstring for how this differs from the automatic give-back
+        breaker. TradeSgnl is never affected -- demo-account data feed,
+        gated only by the real_relay_enabled master switch. Paper is
+        untouched. Same action as Discord's "!stopday"."""
         return await orchestrator.manual_stop_for_today()
 
     @app.post("/real-relay")

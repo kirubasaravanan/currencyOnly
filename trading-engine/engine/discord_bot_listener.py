@@ -1,7 +1,7 @@
 """Discord bot listener -- lets the user type a command in Discord to
-manually act on every open REAL position at once, independent of the
-give-back breaker. [ADD 2026-08-20, extended 2026-08-21, explicit user
-instruction]
+manually act on PineConnector's (FundedNext) open real position(s),
+independent of the give-back breaker. [ADD 2026-08-20, extended
+2026-08-21, explicit user instruction]
 
 Why a separate bot connection: DISCORD_WEBHOOK_URL (discord_alerts.py) is
 outbound-only -- a webhook can send messages but Discord never delivers
@@ -20,31 +20,32 @@ Security: only reacts to a message from DISCORD_AUTHORIZED_USER_ID
 specifically -- anyone else typing a command in a shared server/channel
 is silently ignored (no reply, no hint the command exists).
 
-Three commands, three different scopes:
-  !closeall     -- close every open real position right now. Does NOT
-                  stop new entries from resuming on the next qualifying
-                  signal (any symbol, including the ones just closed).
-  !stopday      -- close every open real position AND pause new real
-                  entries for the rest of today (both relays -- see
+Three commands, three different scopes -- all PineConnector/FundedNext
+only:
+  !closeall     -- close every open PineConnector position right now.
+                  Does NOT stop new entries from resuming on the next
+                  qualifying signal (any symbol, including the ones just
+                  closed).
+  !stopday      -- close every open PineConnector position AND pause new
+                  PineConnector entries for the rest of today (see
                   orchestrator.manual_stop_for_today()'s own docstring
                   for why this is a separate flag from the give-back
                   breaker's).
-  !close SYMBOL -- close only that one symbol's open position, e.g.
-                  "!close USDCHF". Nothing else is touched -- every other
-                  open symbol keeps running exactly as before, and this
-                  same symbol can open a fresh trade again on the very
-                  next qualifying signal. No block flag is set; this is
-                  strictly narrower than !closeall, not a variant of
+  !close SYMBOL -- close only that one symbol's PineConnector position,
+                  e.g. "!close USDCHF". Nothing else is touched -- every
+                  other open symbol keeps running exactly as before, and
+                  this same symbol can open a fresh trade again on the
+                  very next qualifying signal. No block flag is set; this
+                  is strictly narrower than !closeall, not a variant of
                   !stopday.
 
-All three are deliberately different from the give-back breaker: they act
-on BOTH real relays unconditionally, including TradeSgnl. The "TradeSgnl
-must never be blocked by the give-back breaker" rule was specifically
-about an automatic P&L-based circuit breaker overriding a data-source
-account without asking. These are the opposite: a direct, in-the-moment
-command FROM the account owner. Paper is never touched either way -- it
-stays a clean, continuous research baseline regardless of what happens on
-the real side, same reasoning as the give-back breaker.
+[NARROWED 2026-08-21, explicit user instruction] None of these three ever
+touch TradeSgnl -- it runs on a demo account purely as a continuous data
+feed, so there's no real money for any of these to protect there. Only
+PineConnector, the account actually carrying real risk, is ever affected.
+Paper is untouched by all three either way -- it stays a clean,
+continuous research baseline regardless of what happens on the real
+side, same reasoning as the give-back breaker.
 """
 
 from __future__ import annotations
@@ -113,7 +114,7 @@ def start() -> None:
         try:
             if content == STOP_DAY_COMMAND:
                 result = await orchestrator.manual_stop_for_today()
-                suffix = " New real entries are paused for the rest of today (both accounts)."
+                suffix = " New PineConnector entries are paused for the rest of today (TradeSgnl unaffected)."
             else:
                 result = await orchestrator.close_all_real_positions(symbol=symbol)
                 suffix = "" if symbol is None else " Everything else is untouched -- resumes normally."
@@ -126,9 +127,9 @@ def start() -> None:
         orphans = {name: syms for name, syms in still_open.items() if syms}
 
         if closed:
-            base = f"Sent close for {len(closed)} position(s): {', '.join(closed)}."
+            base = f"Sent close for {len(closed)} position(s) on PineConnector: {', '.join(closed)}."
         else:
-            base = "No open real positions to close."
+            base = "No open PineConnector positions to close."
 
         if orphans:
             orphan_lines = "; ".join(f"{name}: {', '.join(syms)}" for name, syms in orphans.items())
@@ -136,7 +137,7 @@ def start() -> None:
                 f"{base}{suffix}\n⚠️ STILL OPEN after verification -- check manually: {orphan_lines}"
             )
         else:
-            confirmed = " Verified clear on both real accounts." if closed else ""
+            confirmed = " Verified clear on FundedNext." if closed else ""
             await message.channel.send(f"{base}{suffix}{confirmed}")
 
     async def _run() -> None:

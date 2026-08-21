@@ -138,18 +138,20 @@ def _save_giveback_triggered_date(date_str: str) -> None:
 
 
 
-# [ADD 2026-08-21, explicit user instruction] A manual counterpart to the
-# give-back breaker above: "close everything and pause entries for today"
-# triggered BY THE USER in the moment (e.g. a big move that won't last),
-# not by an automatic P&L threshold. Deliberately a SEPARATE flag from
-# _giveback_triggered_date, not a reuse of it, because the two must block
-# different scopes: the automatic breaker exists specifically to protect
-# the FundedNext account and, per explicit instruction, must never touch
-# TradeSgnl; this one is a direct decision from the account owner, so it
-# blocks BOTH relays unconditionally -- same reasoning already applied to
-# discord_bot_listener.py's "!closeall" (paper is untouched either way,
-# staying a clean, continuous baseline). Same restart-persistence pattern
-# as the give-back flag, same natural reset at IST midnight.
+# [ADD 2026-08-21, explicit user instruction; scope narrowed same day]
+# A manual counterpart to the give-back breaker above: "close everything
+# and pause entries for today" triggered BY THE USER in the moment (e.g.
+# a big move that won't last), not by an automatic P&L threshold.
+# Deliberately a SEPARATE flag from _giveback_triggered_date, not a reuse
+# of it -- kept independent in case their scopes ever need to diverge
+# again, even though both are now PineConnector-only in practice.
+#
+# TradeSgnl is NEVER affected by this flag (nor by anything else in this
+# file) -- explicit instruction: it runs on a demo account purely as a
+# continuous data feed, so there's no real money for any stop mechanism
+# to protect there. Gated only by the master real_relay_enabled switch.
+# Same restart-persistence pattern as the give-back flag, same natural
+# reset at IST midnight.
 _manual_block_date: Optional[str] = None
 _MANUAL_BLOCK_STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "storage", "manual_block_state.json")
 
@@ -176,22 +178,34 @@ def _save_manual_block_date(date_str: str) -> None:
 # logged a genuine MT5 deal on the FundedNext account, then vanished with
 # zero exit deal anywhere in a 7-day window -- our own _confirmed_open_ids
 # bookkeeping had no way to know. So close_all_real_positions() below
-# doesn't just trust each relay's response; it re-reads BOTH real
-# accounts' actual positions afterward and reports anything still open as
-# a genuine orphan, never assumed clear from the relay response alone.
+# doesn't just trust the relay's response; it re-reads FundedNext's actual
+# positions afterward and reports anything still open as a genuine
+# orphan, never assumed clear from the relay response alone.
+#
+# [ADD 2026-08-21, explicit user instruction] TradeSgnl is PineConnector-
+# only no more -- it's now excluded from every stop/close mechanism in
+# this file entirely, not just the automatic give-back breaker. TradeSgnl
+# runs on a demo account purely as a continuous data feed; there's no real
+# money to protect, so nothing -- not the give-back breaker, not
+# !closeall/!close SYMBOL/!stopday, nothing -- should ever touch it. Its
+# entries/exits are gated ONLY by the master real_relay_enabled switch
+# (see the entry block in _scan_once() and tradesgnl_relay.py itself,
+# which is otherwise untouched by anything in this module).
 CLOSE_VERIFY_DELAY_SECONDS = 5  # let the EA actually process the close before re-reading
 
 
 def _positions_still_open_sync(symbols: List[str]) -> Dict[str, List[str]]:
     """Synchronous -- call via asyncio.to_thread (MT5's API is blocking).
-    Returns {"TradeSgnl": [...], "FundedNext": [...]} of symbols from
-    `symbols` still genuinely open on each account. Never launches a
-    terminal that isn't already running, and never trusts a connection
-    without verifying the login matches -- same conventions as
+    Returns {"FundedNext": [...]} of symbols from `symbols` still
+    genuinely open on that account -- TradeSgnl is deliberately not
+    checked here at all, since nothing in this module ever closes a
+    position there (see module comment above). Never launches a terminal
+    that isn't already running, and never trusts a connection without
+    verifying the login matches -- same conventions as
     trade_sync_heartbeat.py and real_giveback_source.py. A connection or
     read failure reports "UNVERIFIABLE (...)" rather than silently
     claiming "clear" -- an unconfirmed account must never be read as safe."""
-    still_open: Dict[str, List[str]] = {"TradeSgnl": [], "FundedNext": []}
+    still_open: Dict[str, List[str]] = {"FundedNext": []}
     if not symbols:
         return still_open
 
@@ -199,45 +213,44 @@ def _positions_still_open_sync(symbols: List[str]) -> Dict[str, List[str]]:
         import MetaTrader5 as mt5
         import psutil
     except ImportError as exc:
-        msg = f"UNVERIFIABLE ({exc})"
-        return {"TradeSgnl": [msg], "FundedNext": [msg]}
+        return {"FundedNext": [f"UNVERIFIABLE ({exc})"]}
 
-    accounts = [
-        ("TradeSgnl", trade_sync_heartbeat.MT5_TERMINAL_PATH, trade_sync_heartbeat.MT5_ACCOUNT_LOGIN),
-        ("FundedNext", real_giveback_source.FUNDEDNEXT_MT5_TERMINAL_PATH, real_giveback_source.FUNDEDNEXT_MT5_LOGIN),
-    ]
-    for name, path, login in accounts:
-        if not login:
-            continue  # not configured yet (e.g. FundedNext pre-swap) -- nothing to verify there
-        try:
-            running = any(
-                p.info["name"] == "terminal64.exe" and p.info["exe"] == path
-                for p in psutil.process_iter(["name", "exe"])
-            )
-            if not running:
-                still_open[name] = ["UNVERIFIABLE (terminal not running)"]
-                continue
-            if not mt5.initialize(path=path):
-                still_open[name] = [f"UNVERIFIABLE (connect failed: {mt5.last_error()})"]
-                continue
-            acc = mt5.account_info()
-            if acc is None or acc.login != login:
-                still_open[name] = ["UNVERIFIABLE (account mismatch)"]
-                continue
-            positions = mt5.positions_get() or ()
-            open_symbols = {p.symbol for p in positions}
-            still_open[name] = [s for s in symbols if s in open_symbols]
-        except Exception as exc:  # noqa: BLE001
-            still_open[name] = [f"UNVERIFIABLE ({exc})"]
-        finally:
-            mt5.shutdown()
+    path = real_giveback_source.FUNDEDNEXT_MT5_TERMINAL_PATH
+    login = real_giveback_source.FUNDEDNEXT_MT5_LOGIN
+    if not login:
+        return still_open  # not configured yet -- nothing to verify
+
+    try:
+        running = any(
+            p.info["name"] == "terminal64.exe" and p.info["exe"] == path
+            for p in psutil.process_iter(["name", "exe"])
+        )
+        if not running:
+            still_open["FundedNext"] = ["UNVERIFIABLE (terminal not running)"]
+            return still_open
+        if not mt5.initialize(path=path):
+            still_open["FundedNext"] = [f"UNVERIFIABLE (connect failed: {mt5.last_error()})"]
+            return still_open
+        acc = mt5.account_info()
+        if acc is None or acc.login != login:
+            still_open["FundedNext"] = ["UNVERIFIABLE (account mismatch)"]
+            return still_open
+        positions = mt5.positions_get() or ()
+        open_symbols = {p.symbol for p in positions}
+        still_open["FundedNext"] = [s for s in symbols if s in open_symbols]
+    except Exception as exc:  # noqa: BLE001
+        still_open["FundedNext"] = [f"UNVERIFIABLE ({exc})"]
+    finally:
+        mt5.shutdown()
     return still_open
 
 
 async def close_all_real_positions(symbol: Optional[str] = None) -> Dict:
-    """Closes open position(s) on BOTH real relays right now, then
-    verifies against the actual accounts rather than trusting the relay
-    responses alone (see comment above). Paper is untouched -- it stays a
+    """Closes open position(s) on PineConnector (FundedNext) ONLY, then
+    verifies against the actual account rather than trusting the relay
+    response alone (see comment above). TradeSgnl is never touched --
+    it's a demo-account data feed, gated only by real_relay_enabled, not
+    by anything in this function. Paper is untouched too -- it stays a
     clean, continuous baseline, same as the give-back breaker. Shared by
     discord_bot_listener.py's "!closeall"/"!close SYMBOL", the /close-all,
     /close-symbol/{symbol}, and /stop-day HTTP routes, and
@@ -251,21 +264,19 @@ async def close_all_real_positions(symbol: Optional[str] = None) -> Dict:
     here, unlike manual_stop_for_today()). If None (the default), closes
     everything, matching the prior behavior exactly.
 
-    Returns {"closed_symbols": [...], "still_open": {"TradeSgnl": [...],
-    "FundedNext": [...]}} -- a non-empty "still_open" list for an account
-    means a genuine orphan (or, prefixed "UNVERIFIABLE", that the check
-    itself couldn't run) and needs a human to look, not an assumption
-    that closing succeeded."""
+    Returns {"closed_symbols": [...], "still_open": {"FundedNext": [...]}}
+    -- a non-empty "still_open" list means a genuine orphan (or, prefixed
+    "UNVERIFIABLE", that the check itself couldn't run) and needs a human
+    to look, not an assumption that closing succeeded."""
     targets = [t for t in broker.open_positions if symbol is None or t["symbol"] == symbol]
     closed_symbols: List[str] = []
     for t in list(targets):
-        sent_tradesgnl = await tradesgnl_relay.send_close(t)
         sent_pineconnector = await pineconnector_relay.send_close(t)
-        if sent_tradesgnl or sent_pineconnector:
+        if sent_pineconnector:
             closed_symbols.append(t["symbol"])
 
     if not closed_symbols:
-        return {"closed_symbols": [], "still_open": {"TradeSgnl": [], "FundedNext": []}}
+        return {"closed_symbols": [], "still_open": {"FundedNext": []}}
 
     await asyncio.sleep(CLOSE_VERIFY_DELAY_SECONDS)
     still_open = await asyncio.to_thread(_positions_still_open_sync, closed_symbols)
@@ -273,9 +284,9 @@ async def close_all_real_positions(symbol: Optional[str] = None) -> Dict:
 
 
 async def manual_stop_for_today() -> Dict:
-    """The user's manual "close everything and pause for today" command.
-    See module comment above for why this is a separate flag from the
-    give-back breaker's, blocking both relays unconditionally."""
+    """The user's manual "close everything and pause for today" command --
+    PineConnector (FundedNext) only. TradeSgnl is never affected, see
+    module comment above."""
     global _manual_block_date
     result = await close_all_real_positions()
     _manual_block_date = _current_ist_date
@@ -509,21 +520,20 @@ async def _scan_once() -> None:
             # explicit user instruction, it stays a clean, continuous
             # baseline) -- only the real relay sends are ever suppressed.
             # The two relays are gated INDEPENDENTLY, not together:
-            #   - TradeSgnl: the manual real_relay_enabled switch, plus
-            #     _manual_block_date (the user's own "!stopday" command).
-            #     Never touched by the automatic give-back breaker --
-            #     explicit user instruction, 2026-08-20: "tradsgnl account
-            #     should not be blocked by the Daily giveback limit". It's
-            #     a deliberately unconstrained data source, not a party to
-            #     FundedNext's own automatic risk limit -- but a direct,
-            #     in-the-moment decision from the account owner is a
-            #     different kind of thing entirely, so it DOES apply here.
+            #   - TradeSgnl: ONLY the manual real_relay_enabled switch.
+            #     [ADD 2026-08-21, explicit user instruction] Never touched
+            #     by ANYTHING else -- not the automatic give-back breaker,
+            #     not !closeall/!close SYMBOL/!stopday, nothing. It's a
+            #     demo account used purely as a continuous data feed, so
+            #     none of the stop mechanisms built for protecting real
+            #     money apply to it at all.
             #   - PineConnector (the FundedNext-connected relay): the same
             #     manual switch, PLUS the automatic give-back breaker
-            #     (protects this specific account), PLUS _manual_block_date.
-            if config.state.real_relay_enabled and _manual_block_date != _current_ist_date:
+            #     (protects this specific real account), PLUS
+            #     _manual_block_date (the user's own "!stopday" command).
+            if config.state.real_relay_enabled:
                 await tradesgnl_relay.send_entry(trade)
-                if _giveback_triggered_date != _current_ist_date:
+                if _giveback_triggered_date != _current_ist_date and _manual_block_date != _current_ist_date:
                     await pineconnector_relay.send_entry(trade)
         open_symbols.add(symbol)
 
