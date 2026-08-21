@@ -121,6 +121,21 @@ _GIVEBACK_STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "storage", 
 GIVEBACK_CHECK_INTERVAL_SECONDS = 2 * 60
 _last_giveback_check_at = 0.0
 
+# [ADD 2026-08-21, explicit user instruction -- "Build 2"] Standalone
+# aggregate-risk monitor, runs independent of any pending FX trade -- see
+# real_risk_source._current_risk_sync's docstring for the gap this closes
+# (the entry gate in _scan_once below can't catch the sister app's gold
+# bridge opening on its own and pushing FundedNext's real combined risk
+# over 3% with no FX trade pending to trigger a check). Same 2-minute
+# cadence guard as the give-back breaker, same reasoning -- MT5 reads are
+# blocking and shouldn't run on every 60s scan.
+FUNDEDNEXT_RISK_CHECK_INTERVAL_SECONDS = 2 * 60
+_last_fundednext_risk_check_at = 0.0
+# Alerts only on the TRANSITION into breach (same pattern as
+# _last_risk_block_reason below), and clears once risk drops back under
+# 3% so a later, independent breach can alert fresh.
+_fundednext_risk_breach_alerted = False
+
 
 def _load_giveback_triggered_date() -> Optional[str]:
     try:
@@ -326,6 +341,43 @@ async def _check_daily_giveback_breaker() -> None:
     await discord_alerts.alert_daily_giveback_triggered(peak, current, closed_symbols)
 
 
+async def _check_fundednext_aggregate_risk() -> None:
+    """[ADD 2026-08-21, explicit user instruction -- "Build 2"] Standing
+    monitor, independent of any pending FX trade -- see
+    real_risk_source._current_risk_sync's docstring and
+    FUNDEDNEXT_RISK_CHECK_INTERVAL_SECONDS above for why this exists
+    separately from the entry gate in _scan_once. Read-only: never closes
+    or blocks anything, only alerts."""
+    global _last_fundednext_risk_check_at, _fundednext_risk_breach_alerted
+
+    now_ts = datetime.now(timezone.utc).timestamp()
+    if now_ts - _last_fundednext_risk_check_at < FUNDEDNEXT_RISK_CHECK_INTERVAL_SECONDS:
+        return
+    _last_fundednext_risk_check_at = now_ts
+
+    snapshot = await real_risk_source.check_current_aggregate_risk()
+    if snapshot is None:
+        return  # not reachable this cycle -- no data, no action, try again next cycle
+
+    if not snapshot["exceeds"]:
+        _fundednext_risk_breach_alerted = False
+        return
+
+    if _fundednext_risk_breach_alerted:
+        return  # already alerted for this ongoing breach, don't repeat every cycle
+    _fundednext_risk_breach_alerted = True
+
+    await discord_alerts.alert_engine_event(
+        "🚨 FundedNext real open risk already over 3% -- not from a currencyOnly FX trade",
+        f"Current open risk ${snapshot['current_open_risk_usd']:.2f} across "
+        f"{snapshot['position_count']} open position(s) = {snapshot['current_open_risk_pct']:.2f}% "
+        f"of ${snapshot['equity']:.2f} equity (limit {real_risk_source.MAX_RISK_PCT}%). "
+        f"currencyOnly's own entry gate only checks when IT is about to send a trade, so this "
+        f"was likely caused by something else opening independently (e.g. the gold bridge) -- "
+        f"worth checking the account directly.",
+    )
+
+
 _relayed_partial_ids: set = set()
 
 
@@ -469,6 +521,7 @@ async def _scan_once() -> None:
     await _process_partial_takes()
     await _process_new_closed_trades(now)
     await _check_daily_giveback_breaker()
+    await _check_fundednext_aggregate_risk()
     await _check_session_rollover(now)
     await _check_eod_rollover(now)
     await _check_sod_status(now)

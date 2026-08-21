@@ -84,6 +84,18 @@ def _position_risk_usd(mt5mod, pos) -> float:
     return abs(profit) if profit is not None else 0.0
 
 
+def _aggregate_snapshot(mt5mod) -> Dict:
+    """Real equity + real summed open risk across EVERY open position on
+    the account right now (whole-account, gold bridge included -- see
+    module docstring). Shared by both the entry-gate check below and the
+    standalone monitor, so there's one place computing this number."""
+    acc = mt5mod.account_info()
+    equity = acc.equity
+    positions = mt5mod.positions_get() or ()
+    current_risk = sum(_position_risk_usd(mt5mod, p) for p in positions)
+    return {"equity": equity, "current_open_risk_usd": current_risk, "position_count": len(positions)}
+
+
 def _check_sync(symbol: str, volume: float, entry_price: float, sl_price: float, is_long: bool) -> Optional[Dict]:
     """Synchronous -- call via asyncio.to_thread (MT5's API is blocking).
     Returns None on any failure/unreachability -- caller must fail CLOSED
@@ -100,10 +112,9 @@ def _check_sync(symbol: str, volume: float, entry_price: float, sl_price: float,
     if not _connect(mt5):
         return None
     try:
-        acc = mt5.account_info()
-        equity = acc.equity
-        positions = mt5.positions_get() or ()
-        current_risk = sum(_position_risk_usd(mt5, p) for p in positions)
+        snap = _aggregate_snapshot(mt5)
+        equity = snap["equity"]
+        current_risk = snap["current_open_risk_usd"]
 
         order_type = mt5.ORDER_TYPE_BUY if is_long else mt5.ORDER_TYPE_SELL
         new_trade_profit = mt5.order_calc_profit(order_type, symbol, volume, entry_price, sl_price)
@@ -134,3 +145,56 @@ async def check_pineconnector_risk_ok(symbol: str, volume: float, entry_price: f
     convention for unreachable real-data checks."""
     import asyncio
     return await asyncio.to_thread(_check_sync, symbol, volume, entry_price, sl_price, is_long)
+
+
+def _current_risk_sync() -> Optional[Dict]:
+    """Standalone real-time aggregate-risk snapshot, independent of any
+    pending new trade. [ADD 2026-08-21, explicit user instruction --
+    "Build 2" of the two gaps discussed: the entry gate above only ever
+    runs when currencyOnly itself is about to send an FX trade to
+    PineConnector, so it can't catch the sister app's gold bridge opening
+    a position on its own (no equivalent check exists there) and pushing
+    the account's real combined risk over FundedNext's 3% rule with
+    nothing new on the FX side to trigger a check. This function is meant
+    to be polled on a timer regardless of any trade activity, so that
+    exact case still gets caught and alerted on.
+
+    Read-only, same MT5 access pattern as _check_sync. Returns None on
+    any failure/unreachability -- the caller (a monitor, not a gate) just
+    skips that cycle; there's no fail-open/closed distinction here since
+    nothing is being blocked, only observed."""
+    if not FUNDEDNEXT_MT5_LOGIN:
+        return None
+    if not _terminal_running():
+        return None
+    try:
+        import MetaTrader5 as mt5
+    except ImportError:
+        return None
+    if not _connect(mt5):
+        return None
+    try:
+        snap = _aggregate_snapshot(mt5)
+        equity = snap["equity"]
+        current_risk = snap["current_open_risk_usd"]
+        pct = (100.0 * current_risk / equity) if equity > 0 else 0.0
+        return {
+            "reachable": True,
+            "equity": round(equity, 2),
+            "current_open_risk_usd": round(current_risk, 2),
+            "current_open_risk_pct": round(pct, 3),
+            "position_count": snap["position_count"],
+            "exceeds": pct > MAX_RISK_PCT,
+        }
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        mt5.shutdown()
+
+
+async def check_current_aggregate_risk() -> Optional[Dict]:
+    """Async wrapper for the standalone periodic monitor -- see
+    _current_risk_sync's docstring for why this exists separately from
+    check_pineconnector_risk_ok above."""
+    import asyncio
+    return await asyncio.to_thread(_current_risk_sync)
