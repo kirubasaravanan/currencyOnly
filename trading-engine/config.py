@@ -318,16 +318,29 @@ PAIR_CALIBRATION: Dict[str, PairCalibration] = {
     # USDCHF/AUDJPY/NZDCAD. Narrow to a real window only after that
     # backtest, and only once genuinely positive -- these stay
     # paper-only (PAPER_ONLY_PAIRS) throughout the observation period.
+    # [FIX 2026-08-22, explicit user instruction] Capped to 05:00-22:00 IST
+    # instead of waiting for the per-hour discovery backtest planned in the
+    # comment above -- user's own observation that no pair in this universe
+    # trades meaningfully past 22:00 IST anyway, so there's no reason for
+    # these three to keep the full-24h window open in the meantime. NOTE:
+    # this does NOT address the separate, larger problem already found for
+    # EURJPY/CADJPY specifically -- the 60-day backtest correlation check
+    # (2026-08-21) found both are the two worst pairs in the whole universe
+    # by realized R:R (0.44/0.47, well below the ~0.85 even the BEST pair
+    # realizes), driven by an unusually high share of break-even-only exits
+    # relative to full stop-losses -- a win-rate/exit-mechanics issue, not a
+    # session-timing one. This window cap trims dead hours; it doesn't fix
+    # that.
     "EURJPY": PairCalibration(
-        session_windows_ist=_ist("0000-2400"), max_sl_pips=40, min_sl_pips=8,
+        session_windows_ist=_ist("0500-2200"), max_sl_pips=40, min_sl_pips=8,
         min_base=0.05, use_trend_filter=True, activation_usd=30.0,
     ),
     "NZDJPY": PairCalibration(
-        session_windows_ist=_ist("0000-2400"), max_sl_pips=45, min_sl_pips=8,
+        session_windows_ist=_ist("0500-2200"), max_sl_pips=45, min_sl_pips=8,
         min_base=0.05, use_trend_filter=False, activation_usd=40.0,
     ),
     "CADJPY": PairCalibration(
-        session_windows_ist=_ist("0000-2400"), max_sl_pips=45, min_sl_pips=8,
+        session_windows_ist=_ist("0500-2200"), max_sl_pips=45, min_sl_pips=8,
         min_base=0.05, use_trend_filter=False, activation_usd=40.0,
     ),
     # [FIX 2026-08-21, explicit user instruction, discovery-backtest
@@ -354,8 +367,13 @@ PAIR_CALIBRATION: Dict[str, PairCalibration] = {
     # (40% win, -$263) together account for -$962 of drag. Everything
     # else kept (opposite strategy from EURAUD -- here exclusion alone
     # is enough, no need to cherry-pick thin positive hours).
+    # [FIX 2026-08-22, explicit user instruction] Tail segment trimmed from
+    # 1600-2400 to 1600-2200 -- same "nothing trades meaningfully past
+    # 22:00 IST" reasoning as EURJPY/NZDJPY/CADJPY above, layered on top of
+    # the 2026-08-21 exclusion-based fix (00:00/07:00/15:00 removed) rather
+    # than replacing it.
     "EURNZD": PairCalibration(
-        session_windows_ist=_ist("0100-0700,0800-1500,1600-2400"), max_sl_pips=45, min_sl_pips=8,
+        session_windows_ist=_ist("0100-0700,0800-1500,1600-2200"), max_sl_pips=45, min_sl_pips=8,
         min_base=0.0005, use_trend_filter=True, activation_usd=30.0,
     ),
 }
