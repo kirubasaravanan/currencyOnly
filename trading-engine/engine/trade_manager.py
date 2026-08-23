@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 
-from config import PAIR_CALIBRATION, COOLDOWN_BARS, ENTRY_TIMEFRAME_MINUTES
+from config import PAIR_CALIBRATION, COOLDOWN_BARS, ENTRY_TIMEFRAME_MINUTES, GLOBAL_SESSION_CUTOFF_MINUTES
 
 COOLDOWN_MINUTES = COOLDOWN_BARS * ENTRY_TIMEFRAME_MINUTES
 IST_OFFSET = timedelta(hours=5, minutes=30)
@@ -28,9 +28,13 @@ def _ist_minutes_of_day(now: datetime) -> int:
 
 def is_session_close(symbol: str, now: datetime) -> bool:
     """True once `now` (IST) is past the end of every session window
-    configured for this pair today — no session left to trade, so any open
-    position in this symbol should be force-closed."""
+    configured for this pair today, OR past the global 22:00 IST cutoff
+    (see config.GLOBAL_SESSION_CUTOFF_MINUTES) -- whichever comes first.
+    Either way, no session left to trade, so any open position in this
+    symbol should be force-closed."""
     minutes = _ist_minutes_of_day(now)
+    if minutes >= GLOBAL_SESSION_CUTOFF_MINUTES:
+        return True
     windows = PAIR_CALIBRATION[symbol].session_windows_ist
     last_window_end = max(end for _, end in windows)
     return minutes >= last_window_end

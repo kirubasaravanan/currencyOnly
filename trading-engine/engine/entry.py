@@ -113,6 +113,8 @@ def _ist_minutes_of_day(now: datetime) -> int:
 
 def _in_session(symbol: str, now: datetime) -> bool:
     minutes = _ist_minutes_of_day(now)
+    if minutes >= config.GLOBAL_SESSION_CUTOFF_MINUTES:
+        return False
     for start, end in PAIR_CALIBRATION[symbol].session_windows_ist:
         if start <= minutes < end:
             return True

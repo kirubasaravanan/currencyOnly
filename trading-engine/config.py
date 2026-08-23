@@ -393,6 +393,19 @@ WEEKLY_LOSS_LIMIT = 6.0
 MAX_OPEN_TRADES = 5
 MAX_DRAWDOWN_PCT = 10.0
 
+# [ADD 2026-08-23, explicit user instruction] Global, pair-independent
+# cutoff: no pair may take a new entry or hold an open position past
+# 22:00 IST, regardless of that pair's own session_windows_ist. As of the
+# 2026-08-22 fix (EURJPY/NZDJPY/CADJPY capped to 05:00-22:00, EURNZD's
+# tail trimmed to 22:00), every pair's own window already happens to end
+# by this time -- so this constant is currently redundant with the
+# per-pair windows in practice. It's added anyway as an explicit,
+# pair-independent safety net: entry.py._in_session() and
+# trade_manager.is_session_close() both check this FIRST, so a future
+# config edit that accidentally widens one pair's window past 22:00 can't
+# silently reintroduce overnight-held positions or after-hours entries.
+GLOBAL_SESSION_CUTOFF_MINUTES = 22 * 60  # 22:00 IST
+
 # [ADD 2026-08-18, explicit user instruction] Daily give-back circuit
 # breaker -- account-wide, based on REALIZED P&L only (matches
 # scripts/daily_giveback_report.py's own simplification: a "protect
