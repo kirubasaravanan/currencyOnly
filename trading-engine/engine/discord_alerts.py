@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
@@ -28,12 +29,48 @@ AMBER = 0xD4A72C
 
 
 def _send_sync(payload: Dict) -> None:
+    """[FIX 2026-08-24, found live] Previously never checked the response
+    status -- requests.post() doesn't raise on a non-2xx, so a rejected or
+    rate-limited webhook (Discord's per-webhook limit is easy to hit when
+    two alerts fire in the same scan cycle, e.g. alert_trade_closed() and
+    alert_sync_heartbeat() both firing for the same real_sync_close) failed
+    completely silently -- no log line anywhere, no way to tell after the
+    fact whether a specific message ever went out. Confirmed missing this
+    way: an AUDCAD trade closed via real_sync_close never showed its
+    "CLOSED" embed, and there was nothing in the log to explain why.
+
+    Now logs any non-2xx response, and retries once on 429 specifically
+    (the likely culprit for the AUDCAD case) after honoring Discord's own
+    Retry-After header -- a single bounded retry, not a queue, since this
+    is a best-effort alert channel, not a delivery-guaranteed one."""
     if not DISCORD_WEBHOOK_URL:
         return
     try:
-        requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=8)
+        r = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=8)
     except Exception as exc:  # noqa: BLE001
         print(f"[discord_alerts] send failed: {exc}")
+        return
+
+    if r.status_code in (200, 204):
+        return
+
+    if r.status_code == 429:
+        retry_after = 1.0
+        try:
+            retry_after = float(r.json().get("retry_after", 1.0))
+        except Exception:  # noqa: BLE001
+            pass
+        print(f"[discord_alerts] rate-limited (429), retrying once after {retry_after:.2f}s")
+        time.sleep(retry_after)
+        try:
+            r2 = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=8)
+            if r2.status_code not in (200, 204):
+                print(f"[discord_alerts] retry also failed ({r2.status_code}): {r2.text[:200]}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[discord_alerts] retry send failed: {exc}")
+        return
+
+    print(f"[discord_alerts] webhook returned {r.status_code}: {r.text[:200]}")
 
 
 async def _send_embed(embed: Dict) -> None:
