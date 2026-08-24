@@ -178,6 +178,8 @@ async def send_partial_close(trade: Dict) -> bool:
     if not PINECONNECTOR_LICENSE_ID:
         return False
     if trade["id"] not in _confirmed_open_ids:
+        print(f"[pineconnector_relay] SKIPPED partial-close for trade {trade['id']} ({trade['symbol']}) -- "
+              f"id not in _confirmed_open_ids; real position may now be desynced from paper")
         return False
     if trade["id"] in _relayed_partial_ids:
         return False
@@ -202,6 +204,8 @@ async def send_close(trade: Dict) -> bool:
     if not PINECONNECTOR_LICENSE_ID:
         return False
     if trade["id"] not in _confirmed_open_ids:
+        print(f"[pineconnector_relay] SKIPPED close for trade {trade['id']} ({trade['symbol']}) -- "
+              f"id not in _confirmed_open_ids; if a real position is actually still open, it is now stranded")
         return False
     _confirmed_open_ids.discard(trade["id"])
     _relayed_partial_ids.discard(trade["id"])

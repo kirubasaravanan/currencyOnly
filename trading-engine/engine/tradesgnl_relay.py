@@ -213,6 +213,9 @@ async def send_partial_close(trade: Dict) -> bool:
     if not TRADESGNL_LICENSE_ID:
         return False
     if trade["id"] not in _confirmed_open_ids:
+        print(f"[tradesgnl_relay] SKIPPED partial-close for trade {trade['id']} ({trade['symbol']}) -- "
+              f"id not in _confirmed_open_ids (see seed_confirmed_ids' 2026-08-17 GBPJPY incident note); "
+              f"real position may now be desynced from paper")
         return False
     if trade["id"] in _relayed_partial_ids:
         return False
@@ -236,6 +239,9 @@ async def send_close(trade: Dict) -> bool:
     if not TRADESGNL_LICENSE_ID:
         return False
     if trade["id"] not in _confirmed_open_ids:
+        print(f"[tradesgnl_relay] SKIPPED close for trade {trade['id']} ({trade['symbol']}) -- "
+              f"id not in _confirmed_open_ids (see seed_confirmed_ids' 2026-08-17 GBPJPY incident note); "
+              f"if a real position is actually still open, it is now stranded")
         return False  # entry was never confirmed-sent -- nothing real to close
     _confirmed_open_ids.discard(trade["id"])
     _relayed_partial_ids.discard(trade["id"])
