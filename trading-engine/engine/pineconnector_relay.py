@@ -159,7 +159,7 @@ async def send_entry(trade: Dict) -> None:
         await discord_alerts.alert_relay_failure(symbol, "entry", command, relay="pineconnector")
 
 
-async def send_partial_close(trade: Dict) -> bool:
+async def send_partial_close(trade: Dict, source: str = "unknown") -> bool:
     """[FIX 2026-08-19, found live] Confirmed against PineConnector's own
     official syntax docs (docs.pineconnector.com/syntax) AND a live test-
     fire: partial close is a DISTINCT action verb (closelongvol/
@@ -194,17 +194,27 @@ async def send_partial_close(trade: Dict) -> bool:
         f"comment={_comment_id(symbol, trade['side'])}"
     )
     sent = await asyncio.to_thread(_send_sync, command)
+    print(f"[pineconnector_relay] partial-close source={source} trade={trade['id']} ({symbol}) sent={sent}")
     if not sent:
         from engine import discord_alerts
         await discord_alerts.alert_relay_failure(symbol, "partial_close", command, relay="pineconnector")
     return sent
 
 
-async def send_close(trade: Dict) -> bool:
+async def send_close(trade: Dict, source: str = "unknown") -> bool:
+    """[ADD 2026-08-25, found live] `source` identifies WHICH caller asked
+    for this close -- there are 4 different call sites in orchestrator.py
+    (normal exit, give-back breaker, close_all_real_positions, and via
+    that the 3%-monitor/manual-stop/Discord commands), and every one of
+    them previously produced an IDENTICAL log line, making it impossible
+    to tell which one actually fired after the fact. Discovered chasing a
+    real incident: a trade that had just taken its 50%-partial got an
+    unexplained SECOND full close moments later, and there was no way to
+    tell from the log which of the 4 paths sent it."""
     if not PINECONNECTOR_LICENSE_ID:
         return False
     if trade["id"] not in _confirmed_open_ids:
-        print(f"[pineconnector_relay] SKIPPED close for trade {trade['id']} ({trade['symbol']}) -- "
+        print(f"[pineconnector_relay] SKIPPED close (source={source}) for trade {trade['id']} ({trade['symbol']}) -- "
               f"id not in _confirmed_open_ids; if a real position is actually still open, it is now stranded")
         return False
     _confirmed_open_ids.discard(trade["id"])
@@ -214,6 +224,7 @@ async def send_close(trade: Dict) -> bool:
     close_action = "closelong" if is_long else "closeshort"
     command = f"{PINECONNECTOR_LICENSE_ID},{close_action},{symbol},comment={_comment_id(symbol, trade['side'])}"
     sent = await asyncio.to_thread(_send_sync, command)
+    print(f"[pineconnector_relay] close source={source} trade={trade['id']} ({symbol}) sent={sent}")
     if not sent:
         from engine import discord_alerts
         await discord_alerts.alert_relay_failure(symbol, "close", command, relay="pineconnector")

@@ -82,8 +82,8 @@ async def _process_new_closed_trades(now: datetime) -> None:
     for t in new_trades:
         await discord_alerts.alert_trade_closed(t)
         if t.get("reason") != "real_sync_close":
-            await tradesgnl_relay.send_close(t)
-            await pineconnector_relay.send_close(t)
+            await tradesgnl_relay.send_close(t, source="process_new_closed_trades")
+            await pineconnector_relay.send_close(t, source="process_new_closed_trades")
         _session_trades.append(t)
         _day_trades.append(t)
 
@@ -294,7 +294,7 @@ async def close_all_real_positions(symbol: Optional[str] = None) -> Dict:
     targets = [t for t in broker.open_positions if symbol is None or t["symbol"] == symbol]
     closed_symbols: List[str] = []
     for t in list(targets):
-        sent_pineconnector = await pineconnector_relay.send_close(t)
+        sent_pineconnector = await pineconnector_relay.send_close(t, source="close_all_real_positions")
         if sent_pineconnector:
             closed_symbols.append(t["symbol"])
 
@@ -343,7 +343,7 @@ async def _check_daily_giveback_breaker() -> None:
     _save_giveback_triggered_date(_current_ist_date)
     closed_symbols: List[str] = []
     for t in list(broker.open_positions):
-        sent = await pineconnector_relay.send_close(t)
+        sent = await pineconnector_relay.send_close(t, source="giveback_breaker")
         if sent:
             closed_symbols.append(t["symbol"])
     await discord_alerts.alert_daily_giveback_triggered(peak, current, closed_symbols)
@@ -430,8 +430,8 @@ async def _process_partial_takes() -> None:
     for t in broker.open_positions:
         if t.get("partial_taken") and t["id"] not in _relayed_partial_ids:
             _relayed_partial_ids.add(t["id"])
-            relayed = await tradesgnl_relay.send_partial_close(t)
-            await pineconnector_relay.send_partial_close(t)
+            relayed = await tradesgnl_relay.send_partial_close(t, source="process_partial_takes")
+            await pineconnector_relay.send_partial_close(t, source="process_partial_takes")
             await discord_alerts.alert_partial_close(t, relayed)
 
 

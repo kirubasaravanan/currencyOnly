@@ -105,7 +105,7 @@ class _AccountState:
     terminal_path: str
     account_login: int
     comment_id_fn: Callable[[str, str], str]
-    send_close: Callable[[Dict], "Awaitable[bool]"]
+    send_close: Callable[..., "Awaitable[bool]"]  # (trade, source=...) -- see 2026-08-25 source-tagging note
     # Set only for accounts that can hold positions that AREN'T ours (the
     # FundedNext terminal also carries the sister app's gold bridge) --
     # None means "every open position on this account is ours," no filter.
@@ -395,7 +395,7 @@ async def run_heartbeat_for(acct: _AccountState, prices: Optional[Dict[str, floa
             result["direction1_closed_paper"].append(phantom)
 
     for still_open in result["still_open_on_real"]:
-        sent = await acct.send_close(still_open["paper_trade"])
+        sent = await acct.send_close(still_open["paper_trade"], source="sync_heartbeat_direction2")
         if not sent:
             result["direction2_close_unverified"].append(still_open)
             continue

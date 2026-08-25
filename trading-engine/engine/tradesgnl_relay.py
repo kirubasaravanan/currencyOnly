@@ -191,7 +191,7 @@ async def send_entry(trade: Dict) -> None:
         await discord_alerts.alert_relay_failure(symbol, "entry", command)
 
 
-async def send_partial_close(trade: Dict) -> bool:
+async def send_partial_close(trade: Dict, source: str = "unknown") -> bool:
     """Relays the 50%-at-TP1 partial the paper engine just took (see
     paper_broker.py's _take_partial()). Only fires for a trade we confirmed
     the entry for, and only once per trade. Returns whether it actually
@@ -228,18 +228,25 @@ async def send_partial_close(trade: Dict) -> bool:
         f"pct=0.5,"
         f"comment={_comment_id(symbol, trade['side'])}"
     )
-    return await asyncio.to_thread(_send_sync, command)
+    sent = await asyncio.to_thread(_send_sync, command)
+    print(f"[tradesgnl_relay] partial-close source={source} trade={trade['id']} ({symbol}) sent={sent}")
+    return sent
 
 
-async def send_close(trade: Dict) -> bool:
+async def send_close(trade: Dict, source: str = "unknown") -> bool:
     """Returns whether it actually sent successfully -- callers that need
     to know (e.g. orchestrator's daily give-back breaker, which reports
     exactly which symbols got closed on the real side) can check this
-    instead of assuming success."""
+    instead of assuming success.
+
+    [ADD 2026-08-25] `source` identifies which caller asked for this close
+    -- same reasoning as pineconnector_relay.send_close's own 2026-08-25
+    note. TradeSgnl currently has only one caller (normal exits), but
+    tagging it here too keeps both relays' diagnostics symmetric."""
     if not TRADESGNL_LICENSE_ID:
         return False
     if trade["id"] not in _confirmed_open_ids:
-        print(f"[tradesgnl_relay] SKIPPED close for trade {trade['id']} ({trade['symbol']}) -- "
+        print(f"[tradesgnl_relay] SKIPPED close (source={source}) for trade {trade['id']} ({trade['symbol']}) -- "
               f"id not in _confirmed_open_ids (see seed_confirmed_ids' 2026-08-17 GBPJPY incident note); "
               f"if a real position is actually still open, it is now stranded")
         return False  # entry was never confirmed-sent -- nothing real to close
@@ -250,6 +257,7 @@ async def send_close(trade: Dict) -> bool:
     close_action = "closelong" if is_long else "closeshort"
     command = f"{TRADESGNL_LICENSE_ID},{symbol},{close_action},comment={_comment_id(symbol, trade['side'])}"
     sent = await asyncio.to_thread(_send_sync, command)
+    print(f"[tradesgnl_relay] close source={source} trade={trade['id']} ({symbol}) sent={sent}")
     if not sent:
         from engine import discord_alerts
         await discord_alerts.alert_relay_failure(symbol, "close", command)
