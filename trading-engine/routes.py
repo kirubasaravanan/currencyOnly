@@ -118,11 +118,22 @@ def register_routes(app: FastAPI) -> None:
 
     @app.post("/trades/{trade_id}/close")
     async def close_trade(trade_id: int):
+        """[FIX 2026-08-25, found live] Used to call broker.close_trade()
+        with no `prices` dict, so usd_conversion_rate() had nothing to work
+        with and close_trade()'s `or 1.0` fallback silently treated any
+        non-USD-quoted pair's raw quote-currency P&L as if it were already
+        USD -- inflated a real GBPJPY close by ~163x ($10,996.50 instead of
+        ~$65). market_data.latest_price() is a pure cache read (populated
+        by the engine's own scan loop every cycle), so building a full
+        snapshot here costs nothing and matches what _scan_once() already
+        threads through the automated close paths (see
+        trade_sync_heartbeat.run_heartbeat_for's own prices parameter)."""
         trade = next((t for t in broker.open_positions if t["id"] == trade_id), None)
         if trade is None:
             raise HTTPException(status_code=404, detail="trade not found")
         price = market_data.latest_price(trade["symbol"], "15m") or trade["entry_price"]
-        closed = broker.close_trade(trade_id, price, "manual")
+        prices = {s: p for s in PAIRS if (p := market_data.latest_price(s, "15m")) is not None}
+        closed = broker.close_trade(trade_id, price, "manual", prices=prices)
         return closed
 
     @app.post("/reset")
