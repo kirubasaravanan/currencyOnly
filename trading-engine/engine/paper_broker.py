@@ -166,7 +166,7 @@ class PaperBroker:
 
             dynamic = config.state.exit_mode == "dynamic"
             if dynamic:
-                self._maybe_move_to_breakeven(t, favorable_move)
+                self._maybe_move_to_breakeven(t, favorable_move, conv)
                 self._update_trailing_stop(t, favorable_move)
 
             sl, tp = t["sl_price"], t["tp_price"]
@@ -206,15 +206,35 @@ class PaperBroker:
         self._save()
 
     # ------------------------------------------------------------------
-    def _maybe_move_to_breakeven(self, t: Dict, favorable_move: float) -> None:
+    def _maybe_move_to_breakeven(self, t: Dict, favorable_move: float, conv: float) -> None:
         """V109's earlyBE: move SL to breakeven+offset once price is 90% of
-        the way to TP1, even before TP1 itself is hit."""
+        the way to TP1, even before TP1 itself is hit.
+
+        [FIX 2026-08-25, explicit user instruction] The offset used to be
+        BE_OFFSET_PCT (25% of sl_dist) alone -- a fixed, generic buffer
+        ported from V109, unrelated to what this app's own trade actually
+        costs in commission. In practice it was already generous enough
+        (every real break_even exit sampled this session landed net-
+        positive after commission, not at a true $0), so this doesn't
+        replace that buffer -- it adds a commission-covering FLOOR on top,
+        guaranteeing the BE price can never sit closer to entry than what
+        round-trip commission (entry + exit, both sides) would need to
+        break exactly even. Whichever offset locks in more stays in
+        effect; the existing buffer wins in the overwhelmingly common
+        case, the commission floor only matters for a pair/lot-size
+        combination where 25% of sl_dist would otherwise be too thin."""
         if t["be_moved"] or t["partial_taken"]:
             return
         if favorable_move < t["tp1_dist"] * EARLY_BE_TRIGGER_PCT:
             return
         direction = 1 if t["side"] == "BULLISH" else -1
-        be_price = t["entry_price"] + direction * (t["sl_dist"] * BE_OFFSET_PCT)
+        contract = CONTRACT_SIZE_USD[t["symbol"]]
+        offset = t["sl_dist"] * BE_OFFSET_PCT
+        if conv and conv > 0:
+            round_trip_commission = 2 * COMMISSION_PER_LOT_PER_SIDE_USD
+            commission_offset = round_trip_commission / (contract * conv)
+            offset = max(offset, commission_offset)
+        be_price = t["entry_price"] + direction * offset
         new_sl = max(t["sl_price"], be_price) if direction == 1 else min(t["sl_price"], be_price)
         if new_sl != t["sl_price"]:
             t["sl_price"] = round(new_sl, 6)
