@@ -217,8 +217,21 @@ class PairCalibration:
 
 
 PAIR_CALIBRATION: Dict[str, PairCalibration] = {
+    # [TRIAL 2026-08-25, explicit user instruction, GBPUSD only for now]
+    # Was a single continuous 10:30-17:00 IST block, never backtest-
+    # revalidated (same unvalidated-V109-port category NZDUSD/GBPAUD/
+    # AUDUSD were still in). Real TradeSgnl history (11 trades) showed a
+    # clean pattern: all 4 losses landed in the gaps right before London
+    # KZ opens (11:00, before 11:30) and right before NY KZ opens (16:00,
+    # before 16:30), while the only real win landed squarely inside
+    # London KZ (12:00). Narrowed to just London KZ (11:30-14:30 IST) +
+    # NY KZ (16:30-19:30 IST) to test that pattern directly -- explicitly
+    # a live trial on ONE pair, not yet backtest-confirmed or extended to
+    # any other pair. Revisit after a few more trading days of real
+    # results before deciding whether to keep, revert, or extend this to
+    # other pairs.
     "GBPUSD": PairCalibration(
-        session_windows_ist=_ist("1030-1700"), stop_mult=1.80, tp_mult=1.80,
+        session_windows_ist=_ist("1130-1430,1630-1930"), stop_mult=1.80, tp_mult=1.80,
         sweep_lb=25, mss_lb=6, max_sl_pips=45, min_sl_pips=10, min_base=0.0007,
         conf_boost=0.05, use_trend_filter=False, activation_usd=20.0,
     ),
