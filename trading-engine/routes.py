@@ -18,7 +18,7 @@ import config
 from config import PAIRS, PAIR_CALIBRATION
 from data.market_data import market_data
 from engine import orchestrator
-from engine.analytics import compute_stats
+from engine.analytics import compute_stats, rank_pairs_for_rotation
 from engine.backtester import run_backtest
 from engine.entry import entry_signal
 from engine.macro_filter import calendar, macro_snapshot
@@ -111,6 +111,14 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/stats")
     async def stats():
         return compute_stats(broker)
+
+    @app.get("/stats/rotation")
+    async def stats_rotation(min_trades: int = 15, keep_top: int = 15):
+        """Keep-top-N / bench-the-rest ranking for the user's rotation
+        proposal -- see analytics.rank_pairs_for_rotation's own docstring
+        for why non-strategy exits are stripped and why a minimum trade
+        count gates eligibility before a pair is judged either way."""
+        return rank_pairs_for_rotation(broker.closed_trades, PAIRS, min_trades=min_trades, keep_top=keep_top)
 
     @app.get("/trades")
     async def trades():
