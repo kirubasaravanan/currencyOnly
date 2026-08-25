@@ -253,7 +253,14 @@ PAIR_CALIBRATION: Dict[str, PairCalibration] = {
     "GBPJPY": PairCalibration(
         session_windows_ist=_ist("1230-1700"), stop_mult=1.20, tp_mult=2.40,
         min_base=0.05, para_thresh=0.55, use_trend_filter=False,
-        activation_usd=100.0, activation_pct=90.0, trail_lock_pct=0.0,
+        # [FIX 2026-08-25, explicit user instruction] activation_pct/
+        # trail_lock_pct were a 1:1 V109 Pine-script port from day one,
+        # never actually backtested for this engine -- unlike every other
+        # pair (all running on the class default of 50/50), GBPJPY alone
+        # sat at a 90% activation bar with 0% base lock, which in practice
+        # meant its trailing stop almost never activated before TP1. Now
+        # matches the default that every other pair already uses.
+        activation_usd=100.0,
     ),
     # [FIX 2026-08-21, explicit user instruction, 60-day backtest evidence]
     # AUDJPY was the worst-performing pair in the live paper track record
