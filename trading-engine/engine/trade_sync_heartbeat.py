@@ -71,6 +71,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Dict, List, Optional
 
+from config import PAIRS
 from engine.paper_broker import broker
 from engine.real_giveback_source import FUNDEDNEXT_MT5_TERMINAL_PATH, FUNDEDNEXT_MT5_LOGIN
 from engine.tradesgnl_relay import _comment_id as _tradesgnl_comment_id, send_close as _tradesgnl_send_close
@@ -83,6 +84,22 @@ from engine.pineconnector_relay import _comment_id as _pineconnector_comment_id,
 MT5_SERVER_UTC_OFFSET = timedelta(hours=3)
 
 HEARTBEAT_ENABLED = True
+
+# [PAUSED 2026-08-25, explicit user instruction, found live] A real false
+# positive: GBPCAD's partial-close left the real remainder open at 0.25
+# lots on TradeSgnl, but the broker clears the position's comment the
+# moment its volume changes. Direction 1's "genuinely open" check matched
+# on (symbol, comment) -- once the comment went blank, that match broke,
+# fell through to _find_closing_deal(), found the PARTIAL's own closing
+# deal (never checked whether it accounted for the FULL remaining volume),
+# and force-closed paper on a close that never actually happened. The real
+# 0.25 lots sat open and unmanaged. Root cause fixed below (symbol-alone
+# matching, no longer comment-dependent) -- this flag stays False until
+# that fix has run clean for a while with no repeat false positives.
+# Detection/alerting still runs either way; only the CLOSE ACTIONS are
+# gated by this.
+HEARTBEAT_AUTO_ACTIONS_ENABLED = False
+
 HEARTBEAT_INTERVAL_SECONDS = 5 * 60
 GRACE_PERIOD_SECONDS = 10 * 60
 DIRECTION2_LOOKBACK_HOURS = 24
@@ -141,8 +158,22 @@ class _AccountState:
         acc = mt5mod.account_info()
         return acc is not None and acc.login == self.account_login
 
-    def is_ours(self, comment: str) -> bool:
-        return comment.startswith(self.own_tag_prefix) if self.own_tag_prefix else True
+    def is_ours(self, comment: str, symbol: Optional[str] = None) -> bool:
+        """[FIX 2026-08-25] A blank comment used to fail this check outright
+        on FundedNext (own_tag_prefix set), silently dropping a genuinely-
+        ours position from real_positions the moment MT5 cleared its
+        comment after a partial-close -- the same root cause as the
+        (symbol, comment) matching bug above, but one filtering step
+        earlier, and NOT fixed by the symbol-alone matching change alone
+        since a position filtered out here never reaches that matching at
+        all. A blank comment is treated as ours when the symbol is one
+        this app trades -- safe because the gold bridge sharing this
+        terminal only ever trades XAUUSD, which is never in config.PAIRS."""
+        if not self.own_tag_prefix:
+            return True
+        if comment.startswith(self.own_tag_prefix):
+            return True
+        return not comment and symbol in PAIRS
 
 
 TRADESGNL_ACCOUNT = _AccountState(
@@ -237,13 +268,22 @@ def _detect_sync(acct: _AccountState) -> Dict:
     in_grace = acct.in_grace_period()
 
     try:
-        real_positions = [p for p in (mt5.positions_get() or ()) if acct.is_ours(p.comment)]
-        real_open_tags = {(p.symbol, p.comment) for p in real_positions}
-        real_open_by_tag = {(p.symbol, p.comment): p for p in real_positions}
-        internal_open_tags = {
-            (t.get("symbol"), acct.comment_id_fn(t.get("symbol"), t.get("side", "")))
-            for t in broker.open_positions
-        }
+        # [FIX 2026-08-25, explicit user instruction] Matched by (symbol,
+        # comment) until now -- broken by a real, observed broker behavior:
+        # the comment gets cleared the moment a position's volume changes
+        # (i.e. right after our own partial-close), so a genuinely-still-
+        # open post-partial position stopped matching its own tag and fell
+        # through into the "must be closed" path below. Symbol alone is
+        # safe here specifically because this app only ever holds ONE
+        # position per symbol at a time (orchestrator.py's own
+        # open_symbols check enforces that), and on the shared FundedNext
+        # terminal, acct.is_ours() already filters out the gold bridge's
+        # positions by comment PREFIX before this point -- so a currencyOnly
+        # FX symbol can never collide with the gold bridge's XAUUSD, whose
+        # symbol never appears in this app's own PAIRS list anyway.
+        real_positions = [p for p in (mt5.positions_get() or ()) if acct.is_ours(p.comment, p.symbol)]
+        real_positions_by_symbol = {p.symbol: p for p in real_positions}
+        internal_open_symbols = {t.get("symbol") for t in broker.open_positions}
 
         # --- Direction 1 (paper open, real not) + lot-mismatch check for
         # positions genuinely open on both sides ---
@@ -251,9 +291,9 @@ def _detect_sync(acct: _AccountState) -> Dict:
         for t in list(broker.open_positions):
             symbol = t.get("symbol")
             side = t.get("side", "")
-            tag = acct.comment_id_fn(symbol, side)
-            if (symbol, tag) in real_open_tags:
-                real_pos = real_open_by_tag[(symbol, tag)]
+            tag = acct.comment_id_fn(symbol, side)  # still used for _find_closing_deal()'s history search below
+            real_pos = real_positions_by_symbol.get(symbol)
+            if real_pos is not None:
                 if abs(real_pos.volume - t.get("lots", 0.0)) > LOT_MISMATCH_TOLERANCE:
                     result["lot_mismatches"].append({
                         "trade_id": t["id"], "symbol": symbol, "side": side,
@@ -317,14 +357,13 @@ def _detect_sync(acct: _AccountState) -> Dict:
                     closed_at = closed_at.replace(tzinfo=timezone.utc)
                 if closed_at < cutoff:
                     continue
-                tag = acct.comment_id_fn(symbol, t.get("side", ""))
-                if (symbol, tag) in internal_open_tags:
-                    # A newer paper position with the same symbol+side is
-                    # open right now -- the real position matches THAT one,
-                    # not this older closed trade. Direction 1 above already
-                    # covers whether the newer one is in sync.
+                if symbol in internal_open_symbols:
+                    # A newer paper position on this symbol is open right
+                    # now -- the real position matches THAT one, not this
+                    # older closed trade. Direction 1 above already covers
+                    # whether the newer one is in sync.
                     continue
-                real_pos = real_open_by_tag.get((symbol, tag))
+                real_pos = real_positions_by_symbol.get(symbol)
                 if real_pos is None:
                     continue  # genuinely closed on both sides -- good
                 last_alerted = acct.direction2_last_alerted.get(real_pos.ticket, 0.0)
@@ -385,6 +424,13 @@ async def run_heartbeat_for(acct: _AccountState, prices: Optional[Dict[str, floa
     result["direction1_closed_paper"] = []
     result["direction2_closed_real"] = []
     result["direction2_close_unverified"] = []
+    result["actions_paused"] = not HEARTBEAT_AUTO_ACTIONS_ENABLED
+
+    if not HEARTBEAT_AUTO_ACTIONS_ENABLED:
+        # Detection/alerting above still ran in full -- confirmed_phantoms
+        # and still_open_on_real are populated for visibility. Only the
+        # actual close actions are held back while this is False.
+        return result
 
     for phantom in result["confirmed_phantoms"]:
         closed = broker.close_trade(

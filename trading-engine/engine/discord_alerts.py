@@ -193,6 +193,20 @@ async def alert_sync_heartbeat(results_by_account: Dict) -> None:
     what was found -- see trade_sync_heartbeat.py's module docstring."""
     fields = []
     for account, result in results_by_account.items():
+        paused = result.get("actions_paused", False)
+        if paused:
+            for p in result.get("confirmed_phantoms", []):
+                fields.append({
+                    "name": f"⏸️ [{account}] {p['symbol']} closed on real -- paper NOT auto-closed (actions paused)",
+                    "value": f"real P&L ${p['real_pnl']:.2f} @ {p['real_close_time_utc']} -- would have force-closed paper to match; review manually while HEARTBEAT_AUTO_ACTIONS_ENABLED=False",
+                    "inline": False,
+                })
+            for s in result.get("still_open_on_real", []):
+                fields.append({
+                    "name": f"⏸️ [{account}] {s['symbol']} closed in paper, real still open -- NOT auto-closed (actions paused)",
+                    "value": f"paper closed {s['paper_closed_at']} ({s['paper_close_reason']}) -- real ticket {s['real_ticket']} still live P&L ${s['real_profit']:.2f}, {s['real_volume']} lots; would have sent a close, review manually while HEARTBEAT_AUTO_ACTIONS_ENABLED=False",
+                    "inline": False,
+                })
         for u in result.get("uncertain", []):
             fields.append({
                 "name": f"🟡 [{account}] {u['symbol']} may be desynced (paper open, can't confirm real side)",
