@@ -664,12 +664,16 @@ async def _scan_once() -> None:
             #     manual switch, PLUS the automatic give-back breaker
             #     (protects this specific real account), PLUS
             #     _manual_block_date (the user's own "!stopday" command),
-            #     PLUS config.PINECONNECTOR_EXCLUDED_PAIRS -- new trial
-            #     pairs (2026-08-21: EURJPY/NZDJPY/CADJPY/EURAUD/EURNZD)
-            #     relay to TradeSgnl normally (demo, no real money) but
-            #     stay off the real FundedNext account until their
-            #     TradeSgnl monitoring period is satisfactory. PLUS
-            #     [ADD 2026-08-21] a real-time check against FundedNext's
+            #     PLUS config.PINECONNECTOR_ALLOWED_PAIRS -- [CHANGED
+            #     2026-08-25] an ALLOW-list now, not a deny-list -- only
+            #     pairs proven both statistically established and clearly
+            #     net-positive per the rotation ranking get relayed to
+            #     real money; every other pair (weak, negative, or just
+            #     not enough clean trades yet) still relays to TradeSgnl
+            #     normally (demo, no real money) but stays off the real
+            #     FundedNext account until it earns its way onto the
+            #     allow-list at the next ~2-week review. PLUS [ADD
+            #     2026-08-21] a real-time check against FundedNext's
             #     actual "Max Risk: 3% At any time" rule -- see
             #     real_risk_source.py's docstring for why this checks the
             #     REAL account directly rather than trusting that paper's
@@ -682,7 +686,7 @@ async def _scan_once() -> None:
                 if (
                     _giveback_triggered_date != _current_ist_date
                     and _manual_block_date != _current_ist_date
-                    and symbol not in config.PINECONNECTOR_EXCLUDED_PAIRS
+                    and symbol in config.PINECONNECTOR_ALLOWED_PAIRS
                 ):
                     is_long = trade["side"] == "BULLISH"
                     risk_check = await real_risk_source.check_pineconnector_risk_ok(

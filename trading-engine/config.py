@@ -37,7 +37,7 @@ from typing import Dict, FrozenSet, List, Tuple
 # hour-by-hour backtest revalidation already done for the original 17.
 # User's own instruction: add all 5 for a one-week monitoring period
 # regardless of backtest read -- paper AND TradeSgnl relay normally (see
-# PINECONNECTOR_EXCLUDED_PAIRS below), since TradeSgnl is demo/no-real-
+# PINECONNECTOR_ALLOWED_PAIRS below), since TradeSgnl is demo/no-real-
 # money, the same unconstrained-data-source role it already plays for
 # every other pair. PineConnector (the real FundedNext relay) stays
 # excluded until TradeSgnl's live results over that period are
@@ -48,18 +48,35 @@ PAIRS: List[str] = [
     "NZDCAD", "CHFJPY", "EURJPY", "NZDJPY", "CADJPY", "EURAUD", "EURNZD",
 ]
 
-# [ADD 2026-08-21, explicit user instruction; scope clarified same day]
-# Trial pairs that open/manage trades normally on paper AND relay
-# normally to TradeSgnl (demo account, no real money -- exactly the
-# "unconstrained data source" role TradeSgnl already plays for every
-# other pair) but are NEVER sent to PineConnector (the real
-# FundedNext-connected relay) -- orchestrator.py's entry-gating block
-# checks this before calling pineconnector_relay.send_entry() only,
-# TradeSgnl is untouched by this set entirely. Once TradeSgnl's live
-# results over the monitoring period are satisfactory, a pair can be
-# promoted off this set to relay normally everywhere. Empty by default
-# (every original pair already relays to both).
-PINECONNECTOR_EXCLUDED_PAIRS: FrozenSet[str] = frozenset({"EURJPY", "NZDJPY", "CADJPY", "EURAUD", "EURNZD"})
+# [CHANGED 2026-08-25, explicit user instruction] Was a small DENY-list
+# (just the 5 new trial pairs) since every established pair was assumed
+# fine for real money by default. Inverted to an ALLOW-list after the
+# 2026-08-25 rotation-ranking review showed most pairs -- including
+# several with eye-catching raw totals -- don't actually have enough
+# clean (non-manual, non-sync-close) trades yet to call "established",
+# and three that do (NZDUSD/NZDCAD/AUDJPY) are still net-negative on that
+# clean data. Only the pairs below are both statistically established
+# AND clearly net-positive per engine.analytics.rank_pairs_for_rotation
+# (GET /stats/rotation): USDCAD (+$38.70/trade, 6 trades, 100% win),
+# GBPAUD (+$11.62, 6, 66.7%), AUDUSD (+$7.53, 9, 77.8%), GBPNZD (+$7.20,
+# 6, 83.3%). An allow-list (not a deny-list) is the deliberately safer
+# shape here: a newly added pair, or one that just hasn't cleared the
+# sample-size gate yet, defaults to EXCLUDED from real money until it
+# explicitly earns its way in -- never the other way around.
+#
+# Every pair NOT in this set still opens/manages trades normally on
+# paper AND relays normally to TradeSgnl (demo, no real money -- the
+# same unconstrained-data-source role it already plays) -- only
+# PineConnector (the real FundedNext-connected relay) is restricted.
+# orchestrator.py's entry-gating block checks this before calling
+# pineconnector_relay.send_entry() only; TradeSgnl is untouched by this
+# set entirely, same as before.
+#
+# Review cadence: re-run GET /stats/rotation every ~2 weeks and add any
+# pair whose clean expectancy has turned solidly positive with enough
+# trades behind it -- deliberately a manual, reviewed decision each time,
+# not an automatic promotion.
+PINECONNECTOR_ALLOWED_PAIRS: FrozenSet[str] = frozenset({"USDCAD", "GBPAUD", "AUDUSD", "GBPNZD"})
 
 MAJORS: List[str] = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "NZDUSD", "USDCHF", "USDCAD"]
 
