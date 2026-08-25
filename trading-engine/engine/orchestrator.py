@@ -30,7 +30,9 @@ import config
 from config import PAIRS, MAJORS, MTF_TIMEFRAMES, ENGINE_LOOP_SECONDS, SESSIONS_UTC, state
 from data.market_data import market_data
 from engine import risk, correlation, trade_manager, currency_strength, discord_alerts, tradesgnl_relay, pineconnector_relay, trade_sync_heartbeat, real_giveback_source, real_risk_source
-from engine.entry import entry_signal
+from engine.analytics import NON_STRATEGY_EXIT_REASONS
+from engine.entry import entry_signal, _in_session
+from engine.macro_filter import calendar
 from engine.paper_broker import broker
 from engine.session_dominance import current_session
 
@@ -517,6 +519,36 @@ async def _check_sod_status(now: datetime) -> None:
         await discord_alerts.alert_sod_status(date_str, broker.equity, broker.peak_equity, _drawdown_pct())
 
 
+# [ADD 2026-08-25, explicit user instruction] Separate from SOD_TRIGGER_
+# MINUTES above on purpose -- SOD fires at 05:25 IST, right as the
+# earliest pairs' windows are just opening, before there's enough of the
+# day's own trade history for a "how's today looking" check to say
+# anything useful. 08:00 IST (per explicit user choice) gives a few hours
+# of real activity to report on first.
+MORNING_PULSE_TRIGGER_MINUTES = 8 * 60  # 08:00 IST
+_last_morning_pulse_date: Optional[str] = None
+
+
+async def _check_morning_pulse(now: datetime) -> None:
+    global _last_morning_pulse_date
+    date_str = _ist_date_str(now)
+    minutes = _ist_minutes_of_day(now)
+    if minutes < MORNING_PULSE_TRIGGER_MINUTES or _last_morning_pulse_date == date_str:
+        return
+    _last_morning_pulse_date = date_str
+
+    clean_closed = [t for t in _day_trades if t.get("reason") not in NON_STRATEGY_EXIT_REASONS]
+    contaminated_closed = [t for t in _day_trades if t.get("reason") in NON_STRATEGY_EXIT_REASONS]
+    in_window = [s for s in PAIRS if _in_session(s, now)]
+    out_of_window = [s for s in PAIRS if s not in in_window]
+    events = calendar.events(24)
+
+    await discord_alerts.alert_morning_pulse(
+        date_str, broker.open_positions, clean_closed, contaminated_closed,
+        in_window, out_of_window, events,
+    )
+
+
 _last_heartbeat_at = 0.0
 
 
@@ -572,6 +604,7 @@ async def _scan_once() -> None:
     await _check_session_rollover(now)
     await _check_eod_rollover(now)
     await _check_sod_status(now)
+    await _check_morning_pulse(now)
     await _check_sync_heartbeat(prices)
 
     ranking = currency_strength.compute_ranking({s: f.get("1h") for s, f in frames_by_symbol.items()})
@@ -749,9 +782,11 @@ async def start() -> None:
         # start-of-day status message (if already past 05:25 IST) or
         # re-fire a risk-limit-breach alert for a problem that was already
         # reported before the restart.
-        global _last_sod_date, _last_risk_block_reason, _last_eod_date, _giveback_triggered_date, _manual_block_date
+        global _last_sod_date, _last_risk_block_reason, _last_eod_date, _giveback_triggered_date, _manual_block_date, _last_morning_pulse_date
         if _ist_minutes_of_day(now) >= SOD_TRIGGER_MINUTES:
             _last_sod_date = _ist_date_str(now)
+        if _ist_minutes_of_day(now) >= MORNING_PULSE_TRIGGER_MINUTES:
+            _last_morning_pulse_date = _ist_date_str(now)
         # [FIX 2026-08-18, found live -- user reported the EOD summary firing
         # again after a restart] Unlike _last_sod_date just above, this had
         # no restart seeding at all -- any restart after 20:05 IST left

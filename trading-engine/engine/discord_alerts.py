@@ -272,6 +272,66 @@ async def alert_daily_giveback_triggered(peak: float, current: float, closed_sym
     await _send_embed(embed)
 
 
+async def alert_morning_pulse(
+    date_str: str,
+    open_trades: List[Dict],
+    clean_closed: List[Dict],
+    contaminated_closed: List[Dict],
+    in_window: List[str],
+    out_of_window: List[str],
+    calendar_events: List[Dict],
+) -> None:
+    """[ADD 2026-08-25, explicit user instruction] A "how's today looking"
+    check the user asked to have posted automatically instead of pulled by
+    hand every time -- built the same day the real_sync_close phantom-close
+    bug was found contaminating roughly half of one day's closed trades,
+    so `clean_closed`/`contaminated_closed` are reported separately: the
+    raw daily total is misleading on its own until that split is visible,
+    same finding that flipped several pairs from "worst performer" to
+    breakeven earlier the same day. See analytics.NON_STRATEGY_EXIT_REASONS
+    for exactly which reasons count as contamination."""
+    clean_net = round(sum(t.get("pnl", 0.0) for t in clean_closed), 2)
+    clean_wins = sum(1 for t in clean_closed if t.get("pnl", 0.0) > 0)
+    contaminated_net = round(sum(t.get("pnl", 0.0) for t in contaminated_closed), 2)
+
+    open_lines = "\n".join(
+        f"{t['symbol']} {t['side']}: ${t.get('pnl', 0):.2f} (peak ${t.get('peak_pnl', 0):.2f})"
+        for t in open_trades
+    ) or "none"
+
+    calendar_lines = "\n".join(
+        f"{e['title']} ({e['country']}) — {e['time']}" for e in calendar_events
+    ) or "none in the next 24h"
+
+    fields = [
+        {"name": "Open now", "value": open_lines, "inline": False},
+        {
+            "name": "Closed today — clean (strategy exits)",
+            "value": f"{len(clean_closed)} trades, {clean_wins}W-{len(clean_closed) - clean_wins}L, net ${clean_net:.2f}",
+            "inline": False,
+        },
+    ]
+    if contaminated_closed:
+        fields.append({
+            "name": "Excluded from the total above — non-strategy exits",
+            "value": f"{len(contaminated_closed)} trades (manual/sync-close), net ${contaminated_net:.2f} — not a reflection of strategy quality",
+            "inline": False,
+        })
+    fields.append({
+        "name": f"Session coverage — {len(in_window)}/{len(in_window) + len(out_of_window)} pairs in-window",
+        "value": f"Out of window right now: {', '.join(out_of_window) if out_of_window else 'none'}",
+        "inline": False,
+    })
+    fields.append({"name": "Calendar (next 24h, high-impact)", "value": calendar_lines, "inline": False})
+
+    embed = {
+        "title": f"🌅 MORNING PULSE — {date_str}",
+        "color": BLUE,
+        "fields": fields,
+    }
+    await _send_embed(embed)
+
+
 def _aggregate(trades: List[Dict]) -> Dict:
     wins = sum(1 for t in trades if t.get("pnl", 0) > 0)
     losses = len(trades) - wins
