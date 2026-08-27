@@ -404,16 +404,41 @@ PAIR_CALIBRATION: Dict[str, PairCalibration] = {
     # relative to full stop-losses -- a win-rate/exit-mechanics issue, not a
     # session-timing one. This window cap trims dead hours; it doesn't fix
     # that.
+    # [TRIAL 2026-08-27, explicit user instruction] Was a flat 05:00-2200
+    # placeholder (only ever trimmed for dead hours, never backtest-
+    # revalidated -- unlike EURAUD/EURNZD below, which already went
+    # through real 60-day backtest revalidation on 2026-08-21). Narrowed
+    # to ICT kill-zone hours specific to each pair's own two currencies:
+    # Asian KZ (05:30-09:30 IST, JPY's home session) + London KZ
+    # (11:30-14:30 IST, EUR's home session) -- EUR is never Asian-
+    # dominant and JPY is never London-dominant, so this pair can't hit
+    # a "battle" (both-dominant) session per session_dominance.py's own
+    # mapping. Same category of trial as GBPUSD's kill-zone narrowing
+    # the same week -- live-observed only, not yet backtest-confirmed
+    # for this specific pair.
     "EURJPY": PairCalibration(
-        session_windows_ist=_ist("0500-2200"), max_sl_pips=40, min_sl_pips=8,
+        session_windows_ist=_ist("0530-0930,1130-1430"), max_sl_pips=40, min_sl_pips=8,
         min_base=0.05, use_trend_filter=True, activation_usd=30.0,
     ),
+    # [TRIAL 2026-08-27, explicit user instruction] NZD and JPY are BOTH
+    # Asian-session currencies (session_dominance.py's own mapping) --
+    # there is no session where exactly one is dominant, so unlike every
+    # other kill-zone trial this week, this pair can't get a "clean"
+    # window at all. Asian KZ (05:30-09:30 IST) is still the only
+    # session where either currency has real liquidity -- the least-bad
+    # choice, not a confident one. Worth watching this pair specifically
+    # during the trial given that ambiguity.
     "NZDJPY": PairCalibration(
-        session_windows_ist=_ist("0500-2200"), max_sl_pips=45, min_sl_pips=8,
+        session_windows_ist=_ist("0530-0930"), max_sl_pips=45, min_sl_pips=8,
         min_base=0.05, use_trend_filter=False, activation_usd=40.0,
     ),
+    # [TRIAL 2026-08-27, explicit user instruction] Same treatment as
+    # EURJPY above, but CAD's home sessions are overlap/NY, not London
+    # (CAD is never London-dominant, JPY is never overlap/NY-dominant --
+    # no "battle" session possible here either). Asian KZ (05:30-09:30
+    # IST, JPY) + NY KZ (16:30-19:30 IST, CAD).
     "CADJPY": PairCalibration(
-        session_windows_ist=_ist("0500-2200"), max_sl_pips=45, min_sl_pips=8,
+        session_windows_ist=_ist("0530-0930,1630-1930"), max_sl_pips=45, min_sl_pips=8,
         min_base=0.05, use_trend_filter=False, activation_usd=40.0,
     ),
     # [FIX 2026-08-21, explicit user instruction, discovery-backtest
