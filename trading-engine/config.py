@@ -10,7 +10,7 @@ exists for.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, List, Tuple
+from typing import Dict, FrozenSet, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +103,42 @@ SYMBOL_SCOPES: Dict[str, List[str]] = {
     "majors": MAJORS,
     "all_17": PAIRS,
 }
+
+# [ADD 2026-08-26, explicit user instruction] Direct-MT5 execution
+# infrastructure -- connects straight to local MT5 terminals via the
+# official MetaTrader5 Python package instead of relaying through
+# TradeSgnl/PineConnector's webhook services. This is exactly the
+# routing SYMBOL_SCOPES above was already named as groundwork for.
+#
+# TradeSgnl and PineConnector are NOT touched by this: tradesgnl_relay.py
+# and pineconnector_relay.py have zero lines changed, and both keep
+# firing on every trigger exactly as before. This is a purely additive
+# third path, gated entirely by DIRECT_MT5_ACCOUNTS being non-empty --
+# see engine/direct_mt5_relay.py.
+#
+# symbol_scope uses an explicit frozenset per account rather than the
+# SYMBOL_SCOPES presets above -- "different combinations, decided later"
+# (the user's own framing for the planned 5 terminals) doesn't fit
+# "majors" or "all_17" cleanly; a preset can still be assigned as a
+# scope value later since it's just a frozenset either way.
+@dataclass(frozen=True)
+class DirectMT5Account:
+    label: str
+    terminal_path: str
+    account_login: int = 0                          # 0 = inert, same convention as FUNDEDNEXT_MT5_LOGIN
+    enabled: bool = True                             # per-account kill switch, independent of the list itself
+    symbol_scope: Optional[FrozenSet[str]] = None    # None = every symbol in PAIRS (a "demo, all currencies" role)
+    comment_prefix: str = "directmt5-"
+    magic: Optional[int] = None                      # None -> caller defaults to account_login
+    server_utc_offset_hours: float = 3.0             # per-account, not a shared global -- see trade_sync_heartbeat.py
+
+
+# Empty by default -- the master switch for this whole feature. Fill in
+# real entries once VPS terminal locations/logins/symbol splits are
+# decided. Every consumer (orchestrator.py's entry/partial/close loops,
+# trade_sync_heartbeat.ALL_ACCOUNTS) iterates this list and is a no-op
+# while it's empty.
+DIRECT_MT5_ACCOUNTS: List[DirectMT5Account] = []
 
 OANDA_SYMBOL_MAP: Dict[str, str] = {
     "EURUSD": "EUR_USD", "GBPUSD": "GBP_USD", "USDJPY": "USD_JPY",

@@ -29,7 +29,7 @@ from typing import Dict, List, Optional
 import config
 from config import PAIRS, MAJORS, MTF_TIMEFRAMES, ENGINE_LOOP_SECONDS, SESSIONS_UTC, state
 from data.market_data import market_data
-from engine import risk, correlation, trade_manager, currency_strength, discord_alerts, tradesgnl_relay, pineconnector_relay, trade_sync_heartbeat, real_giveback_source, real_risk_source
+from engine import risk, correlation, trade_manager, currency_strength, discord_alerts, tradesgnl_relay, pineconnector_relay, direct_mt5_relay, trade_sync_heartbeat, real_giveback_source, real_risk_source
 from engine.analytics import NON_STRATEGY_EXIT_REASONS
 from engine.entry import entry_signal, _in_session
 from engine.macro_filter import calendar
@@ -56,6 +56,20 @@ def _ist_date_str(now: datetime) -> str:
 def _ist_minutes_of_day(now: datetime) -> int:
     ist = now.astimezone(timezone.utc) + IST_OFFSET
     return ist.hour * 60 + ist.minute
+
+
+# [ADD 2026-08-26, explicit user instruction] Direct-MT5 execution
+# infrastructure -- see engine/direct_mt5_relay.py and
+# config.DIRECT_MT5_ACCOUNTS's own docstrings. TradeSgnl and
+# PineConnector's own send_entry/send_close/send_partial_close calls
+# below are completely untouched by this helper or its call sites --
+# this is a purely additive third path, a no-op while
+# config.DIRECT_MT5_ACCOUNTS is empty (its default).
+def _direct_accounts_for_symbol(symbol: str) -> List["config.DirectMT5Account"]:
+    return [
+        acct for acct in config.DIRECT_MT5_ACCOUNTS
+        if acct.enabled and (acct.symbol_scope is None or symbol in acct.symbol_scope)
+    ]
 
 
 # [CHANGED 2026-08-17, explicit user instruction] Was triggered by the IST
@@ -86,6 +100,8 @@ async def _process_new_closed_trades(now: datetime) -> None:
         if t.get("reason") != "real_sync_close":
             await tradesgnl_relay.send_close(t, source="process_new_closed_trades")
             await pineconnector_relay.send_close(t, source="process_new_closed_trades")
+            for acct in _direct_accounts_for_symbol(t["symbol"]):
+                await direct_mt5_relay.send_close(acct, t, source="process_new_closed_trades")
         _session_trades.append(t)
         _day_trades.append(t)
 
@@ -292,7 +308,13 @@ async def close_all_real_positions(symbol: Optional[str] = None) -> Dict:
     Returns {"closed_symbols": [...], "still_open": {"FundedNext": [...]}}
     -- a non-empty "still_open" list means a genuine orphan (or, prefixed
     "UNVERIFIABLE", that the check itself couldn't run) and needs a human
-    to look, not an assumption that closing succeeded."""
+    to look, not an assumption that closing succeeded.
+
+    [NOTE 2026-08-26] Direct-MT5 accounts (config.DIRECT_MT5_ACCOUNTS)
+    are NOT covered by this function -- a deliberate, known gap, not an
+    oversight. Extending give-back/manual-stop/3%-risk protection to a
+    configured direct account is deferred, explicit follow-up work that
+    must happen before any real money goes into one."""
     targets = [t for t in broker.open_positions if symbol is None or t["symbol"] == symbol]
     closed_symbols: List[str] = []
     for t in list(targets):
@@ -434,6 +456,8 @@ async def _process_partial_takes() -> None:
             _relayed_partial_ids.add(t["id"])
             relayed = await tradesgnl_relay.send_partial_close(t, source="process_partial_takes")
             await pineconnector_relay.send_partial_close(t, source="process_partial_takes")
+            for acct in _direct_accounts_for_symbol(t["symbol"]):
+                await direct_mt5_relay.send_partial_close(acct, t, source="process_partial_takes")
             await discord_alerts.alert_partial_close(t, relayed)
 
 
@@ -711,6 +735,17 @@ async def _scan_once() -> None:
                     # this cycle. No alert spam for a routine "MT5 not up" case; the
                     # existing heartbeat/giveback checks already surface real
                     # connectivity problems with this account.
+
+                # [ADD 2026-08-26] Direct-MT5 accounts -- deliberately
+                # gated ONLY by the master real_relay_enabled switch
+                # above, not by the give-back breaker, manual-block, or
+                # 3%-risk check, which are PineConnector/FundedNext-
+                # specific mechanisms today. A newly-configured direct
+                # account has none of those extra protections yet -- see
+                # config.DIRECT_MT5_ACCOUNTS's own docstring. No-op while
+                # that list is empty (its default).
+                for acct in _direct_accounts_for_symbol(symbol):
+                    await direct_mt5_relay.send_entry(acct, trade)
         open_symbols.add(symbol)
 
 
@@ -741,6 +776,11 @@ async def start() -> None:
         # no-ops regardless of what's seeded).
         tradesgnl_relay.seed_confirmed_ids(broker.open_positions)
         pineconnector_relay.seed_confirmed_ids(broker.open_positions)
+        # [NOTE 2026-08-26] direct_mt5_relay has no equivalent seed call --
+        # it carries no _confirmed_open_ids-style state to restore, since
+        # it always verifies against a live positions_get() read instead
+        # of trusting an in-process set. Not a missing piece, see that
+        # module's own docstring.
         # [FIX 2026-08-17, found live -- user reported Discord spam right
         # after a restart] broker.closed_trades is loaded from persisted
         # disk state (up to the last 500 trades) on every startup, but this

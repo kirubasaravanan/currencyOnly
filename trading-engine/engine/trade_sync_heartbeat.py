@@ -66,16 +66,19 @@ so a flapping MT5 connection doesn't get read as a wave of real problems.
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Dict, List, Optional
 
+import config
 from config import PAIRS
 from engine.paper_broker import broker
 from engine.real_giveback_source import FUNDEDNEXT_MT5_TERMINAL_PATH, FUNDEDNEXT_MT5_LOGIN
 from engine.tradesgnl_relay import _comment_id as _tradesgnl_comment_id, send_close as _tradesgnl_send_close
 from engine.pineconnector_relay import _comment_id as _pineconnector_comment_id, send_close as _pineconnector_send_close
+from engine import direct_mt5_relay
 
 # This demo account's server clock runs 3h ahead of true UTC (empirically
 # confirmed 2026-08-17 for TradeSgnl, and independently re-confirmed
@@ -128,9 +131,24 @@ class _AccountState:
     # None means "every open position on this account is ours," no filter.
     own_tag_prefix: Optional[str] = None
 
+    # [ADD 2026-08-26, explicit user instruction -- direct-MT5 execution
+    # infrastructure] Per-account now, not a shared module constant --
+    # MT5_SERVER_UTC_OFFSET below was independently empirically confirmed
+    # for both TradeSgnl and FundedNext ("coincidence, not an assumption"
+    # per that constant's own comment); a new broker isn't guaranteed to
+    # share it. Default preserves today's behavior for the two existing
+    # accounts with zero edits to either construction below.
+    server_utc_offset: timedelta = field(default_factory=lambda: MT5_SERVER_UTC_OFFSET)
+
     last_unreachable_at: Optional[float] = None
     uncertain_streak: Dict[int, int] = field(default_factory=dict)
     direction2_last_alerted: Dict[int, float] = field(default_factory=dict)
+
+    def to_true_utc(self, server_ts: float) -> datetime:
+        return datetime.fromtimestamp(server_ts, tz=timezone.utc) - self.server_utc_offset
+
+    def to_server_utc(self, true_utc: datetime) -> datetime:
+        return true_utc + self.server_utc_offset
 
     def in_grace_period(self) -> bool:
         return self.last_unreachable_at is not None and (time.time() - self.last_unreachable_at) < GRACE_PERIOD_SECONDS
@@ -194,18 +212,33 @@ FUNDEDNEXT_ACCOUNT = _AccountState(
     own_tag_prefix="pineconnector-",
 )
 
-ALL_ACCOUNTS: List[_AccountState] = [TRADESGNL_ACCOUNT, FUNDEDNEXT_ACCOUNT]
+# [ADD 2026-08-26, explicit user instruction -- direct-MT5 execution
+# infrastructure] _AccountState carries no assumption that there are
+# exactly 2 accounts -- this generalizes the reconciliation heartbeat to
+# any configured direct-MT5 account automatically. functools.partial
+# binds each account's own send_close/comment_id_fn from the generic
+# direct_mt5_relay module (which takes the account as an explicit
+# parameter, unlike tradesgnl_relay.py/pineconnector_relay.py which are
+# each hardwired to one account). While config.DIRECT_MT5_ACCOUNTS is
+# empty (its default), DIRECT_ACCOUNT_STATES is [] and ALL_ACCOUNTS is
+# unchanged from today -- run_heartbeat()'s existing loop needs no edit.
+DIRECT_ACCOUNT_STATES: List[_AccountState] = [
+    _AccountState(
+        label=acct.label,
+        terminal_path=acct.terminal_path,
+        account_login=acct.account_login,
+        comment_id_fn=functools.partial(direct_mt5_relay._comment_id, acct),
+        send_close=functools.partial(direct_mt5_relay.send_close, acct),
+        own_tag_prefix=acct.comment_prefix,
+        server_utc_offset=timedelta(hours=acct.server_utc_offset_hours),
+    )
+    for acct in config.DIRECT_MT5_ACCOUNTS if acct.enabled
+]
+
+ALL_ACCOUNTS: List[_AccountState] = [TRADESGNL_ACCOUNT, FUNDEDNEXT_ACCOUNT, *DIRECT_ACCOUNT_STATES]
 
 
-def _to_true_utc(server_ts: float) -> datetime:
-    return datetime.fromtimestamp(server_ts, tz=timezone.utc) - MT5_SERVER_UTC_OFFSET
-
-
-def _to_server_utc(true_utc: datetime) -> datetime:
-    return true_utc + MT5_SERVER_UTC_OFFSET
-
-
-def _find_closing_deal(mt5mod, symbol: str, tag: str, opened_at_true_utc: datetime):
+def _find_closing_deal(mt5mod, acct: "_AccountState", symbol: str, tag: str, opened_at_true_utc: datetime):
     """The real MT5 deal that closed this position, found via MT5's own
     position_id linkage between the opening deal (entry=0, tagged with our
     comment) and its closing deal (entry=1 -- closing legs never carry our
@@ -213,8 +246,8 @@ def _find_closing_deal(mt5mod, symbol: str, tag: str, opened_at_true_utc: dateti
     if no matching opening deal is found (can't safely guess which closing
     deal belongs to it)."""
     now = datetime.now(timezone.utc)
-    frm_server = _to_server_utc(opened_at_true_utc - timedelta(minutes=10))
-    to_server = _to_server_utc(now)
+    frm_server = acct.to_server_utc(opened_at_true_utc - timedelta(minutes=10))
+    to_server = acct.to_server_utc(now)
     deals = mt5mod.history_deals_get(frm_server, to_server, group=f"*{symbol}*")
     if not deals:
         return None
@@ -222,7 +255,7 @@ def _find_closing_deal(mt5mod, symbol: str, tag: str, opened_at_true_utc: dateti
     opens = [d for d in deals if getattr(d, "entry", None) == 0 and d.comment == tag]
     if not opens:
         return None
-    open_deal = min(opens, key=lambda d: abs(_to_true_utc(d.time).timestamp() - opened_at_true_utc.timestamp()))
+    open_deal = min(opens, key=lambda d: abs(acct.to_true_utc(d.time).timestamp() - opened_at_true_utc.timestamp()))
     closes = [d for d in deals if getattr(d, "entry", None) == 1 and d.position_id == open_deal.position_id]
     if not closes:
         return None
@@ -310,7 +343,7 @@ def _detect_sync(acct: _AccountState) -> Dict:
             if opened_at.tzinfo is None:
                 opened_at = opened_at.replace(tzinfo=timezone.utc)
 
-            deal = _find_closing_deal(mt5, symbol, tag, opened_at)
+            deal = _find_closing_deal(mt5, acct, symbol, tag, opened_at)
             if deal is None or in_grace:
                 still_uncertain_ids.add(t["id"])
                 streak = acct.uncertain_streak.get(t["id"], 0) + 1
@@ -329,7 +362,7 @@ def _detect_sync(acct: _AccountState) -> Dict:
                 "trade_id": t["id"], "symbol": symbol, "side": side,
                 "internal_pnl": t.get("pnl"),
                 "real_exit_price": deal.price, "real_pnl": round(deal.profit, 2),
-                "real_close_time_utc": _to_true_utc(deal.time).isoformat(),
+                "real_close_time_utc": acct.to_true_utc(deal.time).isoformat(),
             })
 
         # Clear streaks for any trade that's no longer open (closed, either
