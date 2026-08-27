@@ -598,7 +598,10 @@ SESSION_DOMINANT_CURRENCIES: Dict[str, FrozenSet[str]] = {
 # accounts -- explicit user instruction to keep this as a general
 # volatility-avoidance practice regardless of account phase, not strictly
 # tied to when the compliance rule itself kicks in.
-NEWS_BLACKOUT_MINUTES = 10
+# [CHANGED 2026-08-27, explicit user instruction] Widened from +-10 to
+# +-30 minutes -- still one flat window for every event, just a bigger
+# safety margin than the initial trial value.
+NEWS_BLACKOUT_MINUTES = 30
 
 
 # ---------------------------------------------------------------------------
