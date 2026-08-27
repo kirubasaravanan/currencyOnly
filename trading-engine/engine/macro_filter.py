@@ -17,20 +17,12 @@ from typing import Dict, List
 import pandas as pd
 import yfinance as yf
 
-from config import EVENT_IMPACT_TIERS, HIGH_IMPACT_EVENTS, NEWS_BLACKOUT_MINUTES
+from config import NEWS_BLACKOUT_MINUTES
 
 FOREX_FACTORY_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 CALENDAR_CACHE_TTL_SECONDS = 600
 
 
-def _blackout_minutes_for(title: str) -> int:
-    lowered = title.lower()
-    for _, keywords, minutes in EVENT_IMPACT_TIERS:
-        if any(k.lower() in lowered for k in keywords):
-            return minutes
-    if any(k.lower() in lowered for k in HIGH_IMPACT_EVENTS):
-        return NEWS_BLACKOUT_MINUTES
-    return 0
 
 
 class EconomicCalendar:
@@ -73,12 +65,22 @@ class EconomicCalendar:
         return sorted(out, key=lambda e: e["time"])
 
     def in_blackout(self) -> Dict:
+        # [CHANGED 2026-08-27, explicit user instruction, following
+        # FundedNext's own published News Reward Share Rule] Was a
+        # keyword-matched tiered window (60/30/20 min by event type) --
+        # both more conservative than FundedNext's own actual +-5 min
+        # rule, and it had a real coverage gap (events not matching a
+        # tracked keyword, e.g. "Jackson Hole Symposium", got silently
+        # ZERO blackout despite being fetched as "High" impact). Every
+        # event in self._events already passed refresh()'s impact=="High"
+        # filter, so no per-event keyword check is needed anymore -- one
+        # flat window (config.NEWS_BLACKOUT_MINUTES) applies to all of
+        # them, which fixes that gap as a side effect of the
+        # simplification.
         self.refresh()
         now = datetime.now(timezone.utc)
+        minutes = NEWS_BLACKOUT_MINUTES
         for e in self._events:
-            minutes = _blackout_minutes_for(e["title"])
-            if minutes <= 0:
-                continue
             delta_minutes = abs((e["time"] - now).total_seconds() / 60)
             if delta_minutes <= minutes:
                 return {

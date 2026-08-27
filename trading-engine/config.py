@@ -579,17 +579,26 @@ SESSION_DOMINANT_CURRENCIES: Dict[str, FrozenSet[str]] = {
 # Economic calendar (high-impact) — reused as-is, symbol-agnostic already
 # ---------------------------------------------------------------------------
 
-HIGH_IMPACT_EVENTS = {
-    "CPI", "PPI", "NFP", "Nonfarm Payroll",
-    "FOMC", "Interest Rate Decision", "Fed Chair",
-    "GDP", "PMI", "Retail Sales", "Unemployment",
-}
-EVENT_IMPACT_TIERS = [
-    ("TIER_1_CRITICAL", {"NFP", "Nonfarm Payroll", "FOMC", "Interest Rate Decision", "Fed Chair", "CPI"}, 60),
-    ("TIER_2_HIGH", {"GDP", "PPI", "Retail Sales"}, 30),
-    ("TIER_3_MODERATE", {"PMI", "Unemployment", "Employment Change", "Claims"}, 20),
-]
-NEWS_BLACKOUT_MINUTES = 30
+# [CHANGED 2026-08-27, explicit user instruction, following FundedNext's own
+# published News Reward Share Rule] Was a keyword-matched tiered system
+# (60/30/20 min depending on event type, matched against title substrings
+# like "NFP"/"CPI"/"PMI"). Two real problems with that: (1) it was much
+# more conservative than FundedNext's own actual rule (a flat +-5 minutes,
+# not 20-60), and (2) the keyword matching had a real coverage gap --
+# events that didn't match any tracked keyword (e.g. "Jackson Hole
+# Symposium", "Prelim Benchmark Payrolls Revision") silently got ZERO
+# blackout despite being fetched as "High" impact, confirmed live against
+# 2026-08-28's actual calendar. Simplified to a single flat window applied
+# to every event calendar.refresh() already filtered to "High" impact at
+# the fetch stage -- no keyword re-matching needed, which fixes the
+# coverage gap as a natural side effect of the simplification, not a
+# separate change. Kept slightly wider than FundedNext's own +-5 min (a
+# small safety margin) and kept applying during the Challenge Phase too,
+# even though FundedNext's rule technically only applies to funded Stellar
+# accounts -- explicit user instruction to keep this as a general
+# volatility-avoidance practice regardless of account phase, not strictly
+# tied to when the compliance rule itself kicks in.
+NEWS_BLACKOUT_MINUTES = 10
 
 
 # ---------------------------------------------------------------------------
