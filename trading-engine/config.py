@@ -37,7 +37,7 @@ from typing import Dict, FrozenSet, List, Optional, Tuple
 # hour-by-hour backtest revalidation already done for the original 17.
 # User's own instruction: add all 5 for a one-week monitoring period
 # regardless of backtest read -- paper AND TradeSgnl relay normally (see
-# PINECONNECTOR_ALLOWED_PAIRS below), since TradeSgnl is demo/no-real-
+# PINECONNECTOR_EXCLUDED_PAIRS below), since TradeSgnl is demo/no-real-
 # money, the same unconstrained-data-source role it already plays for
 # every other pair. PineConnector (the real FundedNext relay) stays
 # excluded until TradeSgnl's live results over that period are
@@ -48,28 +48,32 @@ PAIRS: List[str] = [
     "NZDCAD", "CHFJPY", "EURJPY", "NZDJPY", "CADJPY", "EURAUD", "EURNZD",
 ]
 
-# [CHANGED 2026-08-25, explicit user instruction] Was a small DENY-list
-# (just the 5 new trial pairs) since every established pair was assumed
-# fine for real money by default. Inverted to an ALLOW-list after the
-# 2026-08-25 rotation-ranking review showed most pairs -- including
-# several with eye-catching raw totals -- don't actually have enough
-# clean (non-manual, non-sync-close) trades yet to call "established".
-# An allow-list (not a deny-list) is the deliberately safer shape here:
-# a newly added pair, or one that just hasn't cleared the sample-size
-# gate yet, defaults to EXCLUDED from real money until it explicitly
-# earns its way in -- never the other way around.
+# [REBUILT 2026-08-28, explicit user instruction] Was an ALLOW-list
+# (grew from 4 to 9 pairs over 2026-08-25/27) built on paper's own
+# all-time cumulative ranking -- "only pairs that have proven themselves
+# get real money." Flipped back to a DENY-list after directly comparing
+# REAL executed trades (not paper) on both accounts, filtered to only
+# trades opened since 08-25 (when the restriction actually started, for
+# a fair comparison): simulating "keep everything except the 4-5 worst"
+# against TradeSgnl's real per-symbol numbers over that same window
+# outperformed the then-current top-9 allow-list by +$315 (+$527.54 vs
+# +$212.34) -- driven mostly by EURAUD/USDCHF/GBPCAD/AUDJPY sitting
+# outside the top-9 while genuinely profitable (+$131/+$74/+$53/+$28
+# respectively), plus EURUSD -- IN the old top-9 -- having flipped to
+# -$78.75 real over that same window, a decline the slower review
+# cadence hadn't caught yet.
 #
-# [EXPANDED 2026-08-27, explicit user instruction] The original 4
-# (USDCAD/GBPAUD/AUDUSD/GBPNZD) grew to 9 after a follow-up
-# GET /stats/rotation?min_trades=5 check two days later showed 5 more
-# pairs had both cleared the sample-size gate and turned solidly
-# positive: CHFJPY (+$36.86/trade), USDJPY (+$31.64), EURCAD (+$23.99),
-# EURNZD (+$10.55), EURUSD (+$5.18) -- all-time cumulative expectancy,
-# same min_trades=5 threshold as the original review. Every pair below
-# was net-positive at that check; NZDCAD/NZDUSD/AUDJPY/CADJPY (all
-# net-negative) and the remaining insufficient-data pairs stay excluded.
-# Explicitly a trial -- "test for some days" -- not a final decision,
-# same review cadence as before.
+# The 4 excluded here are the confirmed worst by real $ over that
+# window: CADJPY (-$101.18), EURUSD (-$78.75), GBPUSD (-$60.50), AUDCAD
+# (-$55.87). Every other pair defaults to ALLOWED now -- the deliberate
+# inverse of the previous design's "excluded until proven" stance.
+# Real tradeoff worth being clear-eyed about: several of the now-allowed
+# pairs (NZDJPY, EURJPY, GBPCAD) still have very thin samples (1-2
+# trades) -- they're not in the confirmed-worst-4, but that's not the
+# same as confirmed good. This is more real-money exposure on less-
+# proven pairs than the previous design accepted, a deliberate choice
+# given how much upside the top-9-only approach was shown to be leaving
+# on the table.
 #
 # Every pair NOT in this set still opens/manages trades normally on
 # paper AND relays normally to TradeSgnl (demo, no real money -- the
@@ -79,17 +83,15 @@ PAIRS: List[str] = [
 # pineconnector_relay.send_entry() only; TradeSgnl is untouched by this
 # set entirely, same as before.
 #
-# Review cadence: re-run GET /stats/rotation every ~2 weeks (or sooner,
-# as just happened) and add/remove pairs based on clean expectancy --
-# deliberately a manual, reviewed decision each time, not an automatic
-# promotion. NOTE: this ranking is all-time cumulative, not a rolling
-# window -- it mixes trades from before any calibration fixes together
-# with current trades. Worth keeping in mind when judging a pair whose
-# calibration has changed recently (e.g. GBPUSD/EURJPY/NZDJPY/CADJPY's
-# kill-zone trials).
-PINECONNECTOR_ALLOWED_PAIRS: FrozenSet[str] = frozenset({
-    "USDCAD", "GBPAUD", "AUDUSD", "GBPNZD",
-    "CHFJPY", "USDJPY", "EURCAD", "EURNZD", "EURUSD",
+# Review cadence: re-check real per-symbol performance (not just paper)
+# on both accounts every ~1-2 weeks and adjust this set based on which
+# pairs are confirmed worst by real money -- a manual, reviewed decision
+# each time, not automatic. Prefer a since-date filter over all-time
+# cumulative when comparing (see the 08-28 review's own method above) --
+# all-time numbers mix trades from before calibration fixes with current
+# ones and can mask a recent decline like EURUSD's.
+PINECONNECTOR_EXCLUDED_PAIRS: FrozenSet[str] = frozenset({
+    "CADJPY", "EURUSD", "GBPUSD", "AUDCAD",
 })
 
 MAJORS: List[str] = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "NZDUSD", "USDCHF", "USDCAD"]
