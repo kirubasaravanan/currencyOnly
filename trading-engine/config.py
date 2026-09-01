@@ -650,6 +650,29 @@ REQUIRE_CONFLUENCE_GATE = True
 # per-pair decision — not from a single historical backtest window.
 PAIR_GATE_MODE_OVERRIDE: Dict[str, bool] = {}
 
+# [ADD 2026-09-01, explicit user instruction, real-trade + backtest evidence]
+# Pairs where entry._structural_sl_tp() should SKIP a trade rather than
+# floor-clamp TP1 at half the SL when a nearby structural level pulls it in
+# that far. User noticed (live monitoring) that NZDUSD's TP1/TP2 looked very
+# tight against its SL; real trade data confirmed it -- 3 of NZDUSD's last 6
+# trades landed at exactly rr=0.5 (the floor), and NZDUSD's actual win rate
+# there (~55%) doesn't clear the ~67% breakeven bar a 0.5 RR needs, so a full
+# SL loss bleeds more than a full TP1 win recovers, even before commission.
+#
+# Backtested as a BLANKET change across all 7 majors first (47-day window):
+# NZDUSD flipped from -$188.73 to +$40.66 as hoped (45->35 trades), but the
+# same rule cost GBPUSD and USDJPY far more than NZDUSD gained -- GBPUSD's
+# win rate on these same floor-hit setups is 88.9%, USDJPY's is 73.9%, both
+# comfortably profitable even at 0.5 RR, so skipping them there just threw
+# away good trades (GBPUSD +$817.85->+$426.68, USDJPY +$610.39->-$93.53).
+# Net across all 7: -$1,201.58. The floor-hit geometry doesn't encode which
+# pair's win rate can actually support that ratio, so this is deliberately
+# scoped to the pairs proven NOT to support it, not applied everywhere.
+#
+# Only NZDUSD confirmed so far. Extend this set the same way -- real/backtest
+# evidence per pair, not by assumption from one pair's result.
+STRUCTURAL_TP_FLOOR_SKIP_PAIRS: FrozenSet[str] = frozenset({"NZDUSD"})
+
 
 # ---------------------------------------------------------------------------
 # Engine cadence

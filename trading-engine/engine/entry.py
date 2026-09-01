@@ -178,7 +178,7 @@ def _find_recent_sweep(df_15m: pd.DataFrame, pools, sweep_mem: int) -> Optional[
 STRUCTURAL_BUFFER_ATR_MULT = 0.15
 
 
-def _structural_sl_tp(direction: str, entry_price: float, atr_val: float, clamped_sl_dist: float,
+def _structural_sl_tp(symbol: str, direction: str, entry_price: float, atr_val: float, clamped_sl_dist: float,
                        tp1_dist: float, max_sl_pips: float, pip: float, pools) -> Optional[Dict]:
     """Nudges the ATR-based SL/TP1 to respect nearby structural levels: a
     level breaking is what actually invalidates a trend, so SL should sit
@@ -211,7 +211,28 @@ def _structural_sl_tp(direction: str, entry_price: float, atr_val: float, clampe
         nearest = min(same_side_levels) if is_bull else max(same_side_levels)
         level_dist = abs(nearest - entry_price)
         if level_dist < tp1_dist:  # a level sits before the raw ATR target -- pull TP back to just short of it
-            target_dist = max(level_dist - buffer, sl_dist * 0.5)  # never shrink TP below half the (possibly widened) SL
+            pulled = level_dist - buffer
+            # [FIX 2026-09-01, explicit user instruction, real-trade + backtest
+            # evidence] Was: max(pulled, sl_dist * 0.5) for every pair -- floor-
+            # clamped TP1 at half the SL rather than shrinking further. Real
+            # NZDUSD trades showed that floor was the binding constraint often
+            # enough (3/6 recent trades landed at exactly rr=0.5) to be
+            # negative-EV there: a full SL loses 2x what a full TP1 win pays,
+            # and NZDUSD's actual win rate (~55%) doesn't clear the ~67% bar
+            # that ratio needs. Backtested skipping these trades entirely
+            # instead of floor-clamping, symbol-by-symbol (47-day window,
+            # 7 majors): NZDUSD flipped from -$188.73 to +$40.66 (45->35
+            # trades) as hoped, BUT applied to every pair it was a net loss of
+            # -$1,201.58 overall -- GBPUSD (88.9% win rate on these same
+            # floor-hit setups) and USDJPY (73.9%) lost far more from skipped
+            # winners than NZDUSD gained, because the geometry that triggers
+            # this floor doesn't know which pair's win rate can actually
+            # support a 0.5 RR. So: scoped to just the pairs proven not to
+            # support it, not a blanket rule -- see
+            # config.STRUCTURAL_TP_FLOOR_SKIP_PAIRS.
+            if pulled < sl_dist * 0.5 and symbol in config.STRUCTURAL_TP_FLOOR_SKIP_PAIRS:
+                return None
+            target_dist = max(pulled, sl_dist * 0.5)
 
     return {"sl_dist": sl_dist, "tp1_dist": target_dist}
 
@@ -422,7 +443,7 @@ def entry_signal(
 
     tp1_dist = clamped_sl_dist * (active_tp_mult / active_stop_mult)
 
-    structural = _structural_sl_tp(direction, entry_price, atr15, clamped_sl_dist, tp1_dist, calib.max_sl_pips, pip, pools)
+    structural = _structural_sl_tp(symbol, direction, entry_price, atr15, clamped_sl_dist, tp1_dist, calib.max_sl_pips, pip, pools)
     if structural is None:
         return None
     clamped_sl_dist, tp1_dist = structural["sl_dist"], structural["tp1_dist"]
