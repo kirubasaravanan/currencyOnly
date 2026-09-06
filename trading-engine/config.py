@@ -90,9 +90,56 @@ PAIRS: List[str] = [
 # cumulative when comparing (see the 08-28 review's own method above) --
 # all-time numbers mix trades from before calibration fixes with current
 # ones and can mask a recent decline like EURUSD's.
+#
+# [REVISED 2026-09-05, explicit user instruction] Rebuilt from a full
+# TradeSgnl trade-history review (210 trades, Aug 17 - Sep 5), profit-
+# factor-checked and re-verified after removing the 5 largest single
+# trades (each 3-10x a typical trade) to make sure no conclusion here was
+# actually just one outlier trade in disguise:
+#   - GBPUSD: -$205.50, 11.1% win rate -- and WORSE without its one +$176
+#     outlier (-$381.50, 0% win rate). Its entire "win" was that one trade.
+#   - NZDUSD: looked roughly neutral (+$11.00) but that was propped up by
+#     a single +$131 trade; underneath it's -$120.00 (PF 0.58). Newly
+#     added here -- previous review had called this one neutral, which
+#     the fuller history shows was wrong.
+#   - EURNZD: -$193.44, 53.8% win rate -- losses run bigger than wins
+#     (a sizing issue, not a signal-quality one), unaffected by outlier
+#     removal.
+#   - CADJPY, EURUSD, AUDJPY: consistently negative, no outliers involved
+#     in any of them -- genuine, not noise.
+# AUDCAD (previously excluded) is DROPPED from this set -- it wasn't a
+# standout either way in this review and the previous exclusion was from
+# an earlier, smaller-sample comparison.
+# Confirmed-good pairs from the same review (GBPAUD, USDJPY, USDCAD,
+# GBPJPY) are deliberately NOT turned into an allow-list -- see this same
+# set's history above for why an allow-list already underperformed a
+# deny-list on real money once (+$212 vs +$527 over the same window).
 PINECONNECTOR_EXCLUDED_PAIRS: FrozenSet[str] = frozenset({
-    "CADJPY", "EURUSD", "GBPUSD", "AUDCAD",
+    "GBPUSD", "NZDUSD", "CADJPY", "EURUSD", "EURNZD", "AUDJPY",
 })
+
+# [ADD 2026-09-05, explicit user instruction] Restrict PineConnector
+# entries to the IST hours that held up as genuinely profitable in the
+# same TradeSgnl review, after checking each one wasn't just a single
+# outlier trade wearing an hour's clothing:
+#   - 12:00 and 17:00 were EXCLUDED here despite looking like the best/a
+#     good hour in the raw data -- 12:00's whole +$271 was two lucky
+#     trades (a +$176 GBPUSD and a +$131 NZDUSD) that happened to open in
+#     the same hour; without them it's -$35.72. 17:00's +$23.68 was
+#     entirely one +$156.89 USDJPY trade; without it, -$133.21. Neither
+#     survived outlier removal, so neither is trusted here.
+#   - 13:00 WAS a mild loser in the raw numbers (-$51.71) but that was one
+#     GBPAUD -$145 loss; underneath it's +$93.31 (PF 1.24) -- added here
+#     despite looking bad at first glance.
+#   - 06:00, 08:00, 09:00, 16:00 held up unchanged either way and are
+#     included as originally read.
+# Only gates NEW PineConnector entries (same pattern as the pair-exclusion
+# set above) -- a position already open when the clock rolls past a
+# favored hour keeps being managed/closed normally, this never force-exits
+# anything. TradeSgnl and paper are both untouched by this, per explicit
+# instruction -- TradeSgnl keeps trading every pair, every hour, as its
+# unrestricted comparison-baseline role always has.
+PINECONNECTOR_ACTIVE_HOURS_IST: FrozenSet[int] = frozenset({6, 8, 9, 13, 16})
 
 MAJORS: List[str] = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "NZDUSD", "USDCHF", "USDCAD"]
 
