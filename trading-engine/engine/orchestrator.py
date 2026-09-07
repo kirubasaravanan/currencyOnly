@@ -707,20 +707,27 @@ async def _scan_once() -> None:
             #     3% by coincidence, and why "can't verify" fails CLOSED
             #     here specifically (a real compliance rule, not an
             #     opportunistic protection like the give-back breaker).
-            #     PLUS [ADD 2026-09-05] config.PINECONNECTOR_ACTIVE_HOURS_IST
-            #     -- only opens new PineConnector positions in the IST hours
-            #     that held up as genuinely profitable in the outlier-
-            #     checked TradeSgnl review, see that set's own docstring.
+            #     PLUS [ADD 2026-09-05, REVISED 2026-09-07]
+            #     config.PINECONNECTOR_ACTIVE_HOURS_IST /
+            #     _OFFPEAK_PAIRS -- during the IST hours that held up as
+            #     genuinely profitable in the outlier-checked TradeSgnl
+            #     review, every non-excluded pair trades normally; outside
+            #     those hours, PineConnector narrows to just the pairs
+            #     already confirmed strong on real money, rather than
+            #     stopping entirely (was a hard hour block until 2026-09-07
+            #     -- reverted after one day showed it missing a genuine
+            #     +$368 winner; see both sets' own docstrings in config.py).
             #     Entry-only, same as the pair exclusion above -- an
             #     already-open position keeps being managed normally past
             #     the hour boundary.
             if config.state.real_relay_enabled:
                 await tradesgnl_relay.send_entry(trade)
+                in_peak_hour = (_ist_minutes_of_day(now) // 60) in config.PINECONNECTOR_ACTIVE_HOURS_IST
                 if (
                     _giveback_triggered_date != _current_ist_date
                     and _manual_block_date != _current_ist_date
                     and symbol not in config.PINECONNECTOR_EXCLUDED_PAIRS
-                    and (_ist_minutes_of_day(now) // 60) in config.PINECONNECTOR_ACTIVE_HOURS_IST
+                    and (in_peak_hour or symbol in config.PINECONNECTOR_OFFPEAK_PAIRS)
                 ):
                     is_long = trade["side"] == "BULLISH"
                     risk_check = await real_risk_source.check_pineconnector_risk_ok(

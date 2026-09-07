@@ -118,10 +118,10 @@ PINECONNECTOR_EXCLUDED_PAIRS: FrozenSet[str] = frozenset({
     "GBPUSD", "NZDUSD", "CADJPY", "EURUSD", "EURNZD", "AUDJPY",
 })
 
-# [ADD 2026-09-05, explicit user instruction] Restrict PineConnector
-# entries to the IST hours that held up as genuinely profitable in the
-# same TradeSgnl review, after checking each one wasn't just a single
-# outlier trade wearing an hour's clothing:
+# [ADD 2026-09-05, REVISED 2026-09-07, explicit user instruction] The
+# IST hours that held up as genuinely profitable in the TradeSgnl review,
+# after checking each one wasn't just a single outlier trade wearing an
+# hour's clothing:
 #   - 12:00 and 17:00 were EXCLUDED here despite looking like the best/a
 #     good hour in the raw data -- 12:00's whole +$271 was two lucky
 #     trades (a +$176 GBPUSD and a +$131 NZDUSD) that happened to open in
@@ -133,13 +133,41 @@ PINECONNECTOR_EXCLUDED_PAIRS: FrozenSet[str] = frozenset({
 #     despite looking bad at first glance.
 #   - 06:00, 08:00, 09:00, 16:00 held up unchanged either way and are
 #     included as originally read.
-# Only gates NEW PineConnector entries (same pattern as the pair-exclusion
-# set above) -- a position already open when the clock rolls past a
-# favored hour keeps being managed/closed normally, this never force-exits
-# anything. TradeSgnl and paper are both untouched by this, per explicit
-# instruction -- TradeSgnl keeps trading every pair, every hour, as its
-# unrestricted comparison-baseline role always has.
+#
+# [REVISED 2026-09-07] Originally a hard block on every other hour --
+# reverted after one day showed a real cost: EURJPY opened at 11:33 IST
+# (outside this set) and made +$368 on TradeSgnl alone, completely missed
+# by PineConnector. Considered raising the confidence-score bar during
+# off-peak hours instead of blocking pairs outright, but checked it
+# against real trade data first (141 weak-hour trades) and confidence
+# turned out NOT to predict outcome -- correlation 0.067, and not even
+# monotonic (the 0.7-0.8 confidence bucket performed WORSE than 0.0-0.7).
+# Dropped that idea entirely, not deployed.
+#
+# What IS deployed: this set now means "peak hours -- every non-excluded
+# pair trades normally." Outside it, PineConnector narrows to
+# PINECONNECTOR_OFFPEAK_PAIRS instead of shutting off completely -- see
+# that set below for why those specific pairs.
 PINECONNECTOR_ACTIVE_HOURS_IST: FrozenSet[int] = frozenset({6, 8, 9, 13, 16})
+
+# [ADD 2026-09-07, explicit user instruction] Outside PINECONNECTOR_
+# ACTIVE_HOURS_IST, PineConnector narrows to just these pairs rather than
+# stopping entirely -- a softer version of the hour restriction above.
+# These 4 are the pairs already confirmed strong on real money in the
+# same outlier-checked TradeSgnl review (GBPAUD +$451/72.7% WR, USDJPY
+# +$136/63.6%, USDCAD +$135/70.0%, GBPJPY +$85/62.5%), independent of
+# which hour they traded in -- combining two separately-evidenced filters
+# (weak hour + strong pair) rather than mining a new, thinner joint
+# hour-by-pair cell (those cells run 1-2 trades each in the heatmap, not
+# reliable on their own).
+# Honest limit: this does NOT recover every good off-peak trade -- e.g.
+# the EURJPY trade above that prompted this change still wouldn't clear
+# this filter, since EURJPY isn't in this top-4 by real $. It only
+# softens the hour cutoff for pairs already proven good, it doesn't try
+# to rescue every individual missed trade.
+PINECONNECTOR_OFFPEAK_PAIRS: FrozenSet[str] = frozenset({
+    "GBPAUD", "USDJPY", "USDCAD", "GBPJPY",
+})
 
 MAJORS: List[str] = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "NZDUSD", "USDCHF", "USDCAD"]
 
