@@ -96,8 +96,18 @@ calendar = EconomicCalendar()
 
 
 def _direction_sync(ticker: str) -> str:
+    # [FIX 2026-09-08] Same gap found and fixed in data/market_data.py's
+    # own yfinance call -- yf.download() can HANG (not raise) rather than
+    # fail cleanly, which no bare except can catch. Hard thread-pool
+    # timeout so this can never block a caller (e.g. GET /macro)
+    # indefinitely regardless of what Yahoo's API does.
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutureTimeoutError
     try:
-        df = yf.download(ticker, period="5d", interval="1d", progress=False, auto_adjust=False)
+        with ThreadPoolExecutor(max_workers=1) as _ex:
+            _future = _ex.submit(yf.download, ticker, period="5d", interval="1d", progress=False, auto_adjust=False)
+            df = _future.result(timeout=15)
+    except _FutureTimeoutError:
+        return "unknown"
     except Exception:  # noqa: BLE001
         return "unknown"
     if df is None or len(df) < 2:

@@ -115,8 +115,25 @@ class MarketData:
         period = YF_PERIOD_MAP.get(timeframe)
         if not ticker or not interval or not period:
             return None
+        # [FIX 2026-09-08, found live on the new VPS] Unlike _fetch_oanda_sync's
+        # own requests.get(timeout=10) just above, this call had NO timeout at
+        # all -- yf.download() can genuinely HANG (not raise) when Yahoo's API
+        # is slow or silently blocking a given source IP, which the bare
+        # try/except below can never catch (no exception means no except
+        # branch runs). Confirmed live: 24 connections stuck in CloseWait to
+        # Yahoo's IP, the scan loop frozen indefinitely on the very first pair
+        # that fell back to Yahoo. Wrapped in a hard thread-pool timeout so the
+        # call gives up after a bounded time regardless of what yfinance/
+        # curl_cffi does internally -- the abandoned thread is harmless, just
+        # discarded.
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutureTimeoutError
         try:
-            df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False)
+            with ThreadPoolExecutor(max_workers=1) as _ex:
+                _future = _ex.submit(yf.download, ticker, period=period, interval=interval, progress=False, auto_adjust=False)
+                df = _future.result(timeout=15)
+        except _FutureTimeoutError:
+            print(f"[market_data] Yahoo fetch TIMED OUT for {symbol}/{timeframe} after 15s")
+            return None
         except Exception as exc:  # noqa: BLE001
             print(f"[market_data] Yahoo fetch failed for {symbol}/{timeframe}: {exc}")
             return None
