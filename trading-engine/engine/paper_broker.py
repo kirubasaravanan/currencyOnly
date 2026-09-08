@@ -328,6 +328,14 @@ class PaperBroker:
             self.closed_trades.append(t)
             self.open_positions.pop(i)
             self._save()
+            # AI research pipeline: capture this trade to the shared
+            # ForexTradeAnalysis repo the instant it closes. Never raises —
+            # see trade_capture.py's own docstring.
+            try:
+                from engine import trade_capture
+                trade_capture.capture_trade(t)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[paper_broker] trade_capture failed: {exc}")
             return t
         return None
 
