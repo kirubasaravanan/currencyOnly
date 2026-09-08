@@ -59,7 +59,10 @@ load_dotenv()
 FUNDEDNEXT_MT5_TERMINAL_PATH = os.getenv(
     "FUNDEDNEXT_MT5_TERMINAL_PATH", r"C:\Users\Administrator\Pictures\Secondary MT5\terminal64.exe"
 )
-FUNDEDNEXT_MT5_LOGIN = int(os.getenv("FUNDEDNEXT_MT5_LOGIN", "0"))
+# [FIX 2026-09-08, same fix as discord_bot_listener.py's own -- os.getenv's
+# default only applies when the key is entirely absent, not present-but-
+# empty, which is what a fresh deployment following .env.example produces]
+FUNDEDNEXT_MT5_LOGIN = int(os.getenv("FUNDEDNEXT_MT5_LOGIN", "0") or "0")
 
 OUR_COMMENT_PREFIX = "pineconnector-"
 

@@ -52,7 +52,10 @@ from engine.real_giveback_source import FUNDEDNEXT_MT5_TERMINAL_PATH, FUNDEDNEXT
 
 load_dotenv()
 
-MAX_RISK_PCT = float(os.getenv("FUNDEDNEXT_MAX_RISK_PCT", "3.0"))
+# [FIX 2026-09-08, same fix as discord_bot_listener.py's own] os.getenv's
+# default only applies when the key is entirely absent, not present-but-
+# empty.
+MAX_RISK_PCT = float(os.getenv("FUNDEDNEXT_MAX_RISK_PCT", "3.0") or "3.0")
 
 
 def _terminal_running() -> bool:
