@@ -178,6 +178,32 @@ def _save_giveback_triggered_date(date_str: str) -> None:
         json.dump({"triggered_date": date_str}, f)
 
 
+# [ADD 2026-09-08, explicit user instruction, found while turning off both
+# real relays ahead of a planned VPS migration] config.state.real_relay_
+# enabled was plain in-memory state with NO restart persistence -- unlike
+# every other admin toggle in this file (giveback/manual-block above both
+# save to disk). A crash or VPS reboot would have silently re-enabled both
+# TradeSgnl and PineConnector without anyone asking it to, exactly the
+# "same restart-persistence bug found three times already" category noted
+# elsewhere in this file. Same load/save-to-JSON pattern as those two.
+_REAL_RELAY_STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "storage", "real_relay_state.json")
+
+
+def _load_real_relay_enabled() -> bool:
+    try:
+        with open(os.path.abspath(_REAL_RELAY_STATE_FILE)) as f:
+            return json.load(f).get("enabled", True)
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def save_real_relay_enabled(enabled: bool) -> None:
+    path = os.path.abspath(_REAL_RELAY_STATE_FILE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump({"enabled": enabled}, f)
+
+
 
 # [ADD 2026-08-21, explicit user instruction; scope narrowed same day]
 # A manual counterpart to the give-back breaker above: "close everything
@@ -864,6 +890,7 @@ async def start() -> None:
 
         _giveback_triggered_date = _load_giveback_triggered_date()
         _manual_block_date = _load_manual_block_date()
+        config.state.real_relay_enabled = _load_real_relay_enabled()
 
         _task = asyncio.create_task(_loop())
 

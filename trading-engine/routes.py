@@ -248,8 +248,14 @@ def register_routes(app: FastAPI) -> None:
         PineConnector, any future native-MT5 relay) -- explicit user
         instruction, 2026-08-19. Never affects paper trading or the closing
         of an already-open real position -- see config.EngineState's own
-        comment on real_relay_enabled for why."""
+        comment on real_relay_enabled for why.
+
+        [ADD 2026-09-08] Persists to disk (orchestrator.save_real_relay_
+        enabled) so the toggle survives a restart -- this used to be
+        plain in-memory state, silently resetting to enabled=True on any
+        crash or reboot."""
         config.state.real_relay_enabled = req.enabled
+        orchestrator.save_real_relay_enabled(req.enabled)
         return {"real_relay_enabled": config.state.real_relay_enabled}
 
     @app.post("/backtest/run")
