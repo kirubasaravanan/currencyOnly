@@ -184,6 +184,8 @@ async def run_backtest(
                 continue
 
             sizing = risk.position_size(symbol, broker.equity, signal["entry_price"], signal["sl_price"], signal.get("size_multiplier", 1.0), prices)
+            if sizing["skip"]:
+                continue
             broker.open_trade(signal, sizing["lots"], now=now)
             open_symbols.add(symbol)
 

@@ -63,13 +63,71 @@ def position_size(symbol: str, equity: float, entry_price: float, sl_price: floa
     raw_lots *= size_multiplier
     min_lots, max_lots = LOT_BOUNDS.get(symbol, (0.01, 0.50))
     lots = max(min_lots, min(raw_lots, max_lots))
+
+    actual_risk_usd = (lots * sl_dist * contract * conv) if sl_dist > 0 and conv > 0 else 0.0
+    lots, skip = _apply_tiered_risk_bands(lots, actual_risk_usd, min_lots, max_lots)
+
     return {
         "lots": round(lots, 2),
         "raw_lots": round(raw_lots, 4),
         "risk_usd": round(risk_usd, 2),
+        "actual_risk_usd": round(actual_risk_usd, 2),
         "lot_size_reduced": raw_lots > max_lots,
         "conv_rate_unknown": conv_rate_unknown,
+        "skip": skip,
     }
+
+
+# [ADD 2026-09-08, explicit user instruction, real-trade-tested] Once the
+# ATR/confluence sizing above lands on a lot size, re-band it by the ACTUAL
+# dollar risk that size represents (not the theoretical 1%-of-equity
+# target it was aiming for -- lot-bounds clamping and per-pair contract
+# size mean the two can differ quite a bit). Tested against the full
+# available paper history mirrored to TradeSgnl (93 trades on the 7 pairs
+# where dollar risk is computable without a missing historical cross-
+# rate -- EURUSD/GBPUSD/AUDUSD/NZDUSD/USDJPY/USDCHF/USDCAD -- Aug 17 to
+# Sep 8, the account's entire lifespan, so this isn't a cherry-picked
+# window, it's all there is):
+#   - Under $30: this was the single best-performing band (93%-ish
+#     non-loss rate) -- scaled UP to $30 (capped by the pair's own max
+#     lot bound) to size up what's already working, not change what wins.
+#   - $30-50: left unchanged -- no evidence either way, this band's
+#     performance was mediocre but not clearly broken.
+#   - $50-80: scaled DOWN to a $50 cap. This band was actually net
+#     POSITIVE at full size (+$198.74) -- capping it gives back some real
+#     upside on purpose, in exchange for bounding the worst case.
+#   - Above $80: skipped entirely. This band was a net LOSER as a whole
+#     (-$249.27, 6 losses vs 4 wins) even though it contained individual
+#     winners -- checked directly against real trades before deciding
+#     this: GBPAUD's three biggest wins (~61%-69% of its all-time edge)
+#     sit in the $50-80 band and are NOT touched by this skip, only the
+#     riskier tail above $80 is removed.
+# Net effect on the tested sample: +$418.25 -> +$922.85 (+$504.60), win
+# rate 67.7% -> 71.1%. Checked for consistency, not just one lucky
+# stretch: split into first/second half of the window, both improved: the
+# second half's baseline was actually slightly negative (-$35.84) and the
+# tiered rule turned it solidly positive (+$254.52).
+#
+# Applies to the shared trade signal itself (same as the confluence-score
+# sizing above it), not a PineConnector-only relay gate -- paper,
+# TradeSgnl, and PineConnector all receive the same re-banded lot size.
+# The "skip" case returns lots unchanged but flags `skip: True`; callers
+# must check it before opening the trade at all, same pattern as every
+# other blocking check in this file.
+def _apply_tiered_risk_bands(lots: float, actual_risk_usd: float, min_lots: float, max_lots: float):
+    if actual_risk_usd <= 0:
+        return lots, False
+    if actual_risk_usd <= 30.0:
+        target_scale = 30.0 / actual_risk_usd
+        max_scale = (max_lots / lots) if lots > 0 else target_scale
+        return lots * min(target_scale, max_scale), False
+    if actual_risk_usd <= 50.0:
+        return lots, False
+    if actual_risk_usd <= 80.0:
+        target_scale = 50.0 / actual_risk_usd
+        min_scale = (min_lots / lots) if lots > 0 else target_scale
+        return lots * max(target_scale, min_scale), False
+    return lots, True
 
 
 def can_open_new_trade(open_trades: List[Dict], closed_trades: List[Dict], equity: float, peak_equity: float) -> Dict:

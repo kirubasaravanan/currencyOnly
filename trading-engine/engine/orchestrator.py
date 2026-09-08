@@ -670,6 +670,8 @@ async def _scan_once() -> None:
             continue
 
         sizing = risk.position_size(symbol, broker.equity, signal["entry_price"], signal["sl_price"], signal.get("size_multiplier", 1.0), prices)
+        if sizing["skip"]:
+            continue
         trade = broker.open_trade(signal, sizing["lots"])
         if trade is not None:
             await discord_alerts.alert_trade_opened(trade)
