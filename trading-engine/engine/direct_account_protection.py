@@ -316,17 +316,27 @@ async def check_profit_lock_trigger(account: DirectMT5Account) -> Optional[Dict]
     safely enough to pause new entries for the rest of the IST day.
     [ADD 2026-09-08, explicit user instruction]
 
-    Pause when: today's realized P&L (whole account) >= profit_lock_target
-    AND (realized + floating) >= profit_lock_target.
+    Pause when: (realized + floating), whole account, >= profit_lock_target.
 
-    The second clause is the point -- it's what stops a single realized
-    win from locking in a pause while an open losing position is about to
-    drag the day back under target; only pause once the target is safe
-    even in the worst case of closing everything right now. (The user's
-    original phrasing had a third clause -- "or floating P&L is also
-    positive" -- that's logically subsumed by the second: whenever
-    realized already meets the target, a non-negative floating P&L makes
-    realized+floating >= realized >= target automatically.)
+    [CORRECTED 2026-09-08, explicit user instruction/worked example:
+    "suppose my pnl realised is 120 and ongoing trade 3 trade with
+    combine unrealised is 20 the system should not do anything and the
+    moment the unrealised crossed 30 the total pnl realised and unrealised
+    is 150+ and it should pause"] The earlier version additionally
+    required realized ALONE to already reach the target before this
+    combined check even applied -- which would NOT have paused in that
+    exact example (realized $120 never reaches $150 on its own, even once
+    combined crosses it via floating gains). That earlier "realized >=
+    target" gate is gone; combined crossing the target is sufficient by
+    itself, exactly as the example describes.
+
+    Known edge case, not guarded against (flagged, not fixed, since it
+    wasn't part of what was asked): a day where realized is NEGATIVE and
+    a single large floating position is what pushes combined >= target
+    would also pause here, even though nothing has actually been banked
+    yet and that floating gain could evaporate. Worth a guard (e.g.
+    require realized >= 0) if that scenario turns out to matter in
+    practice.
 
     Returns None (do nothing) if unreachable this cycle -- same fail-open
     convention as the giveback reader; this is an opportunistic lock, not
@@ -336,10 +346,7 @@ async def check_profit_lock_trigger(account: DirectMT5Account) -> Optional[Dict]
     totals = await get_account_totals(account)
     if totals is None:
         return None
-    should_pause = (
-        totals["realized"] >= account.profit_lock_target
-        and totals["combined"] >= account.profit_lock_target
-    )
+    should_pause = totals["combined"] >= account.profit_lock_target
     return {**totals, "target": account.profit_lock_target, "should_pause": should_pause}
 
 
