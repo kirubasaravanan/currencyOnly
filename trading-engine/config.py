@@ -272,6 +272,32 @@ DIRECT_MT5_ACCOUNTS: List[DirectMT5Account] = [
         enabled=True,
         symbol_scope=None,
     ),
+    # [ADD 2026-09-08, explicit user instruction] FundedNext 25k -- "MT5 2"
+    # from the planned rollout, on the "Multi Mt5\MT5 -1" terminal
+    # specifically (confirmed live via account_info(): login=12034354,
+    # server=FundedNext-Server, balance=$24,561.98). enabled=False per
+    # explicit instruction ("kept algo OFF as of now, i will turn it on
+    # tmr") -- connected and ready, but the entry/close loops treat a
+    # disabled account exactly like an absent one (direct_mt5_relay.py's
+    # own _guard()), so nothing trades here until this flips to True.
+    #
+    # giveback_min_peak/giveback_pct/max_risk_pct are still None --
+    # deliberately NOT defaulted to a guess. This is real FundedNext
+    # money; per the explicit instruction that prompted building
+    # engine/direct_account_protection.py in the first place ("before
+    # connecting fundednext 25k"), these need the user's own actual
+    # values, not an assumption, before this account should ever be
+    # enabled.
+    DirectMT5Account(
+        label="fundednext-25k",
+        terminal_path=r"C:\Program Files\Multi Mt5\MT5 -1\terminal64.exe",
+        account_login=12034354,
+        enabled=False,
+        symbol_scope=None,
+        giveback_min_peak=None,
+        giveback_pct=None,
+        max_risk_pct=None,
+    ),
 ]
 
 OANDA_SYMBOL_MAP: Dict[str, str] = {
