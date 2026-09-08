@@ -281,22 +281,31 @@ DIRECT_MT5_ACCOUNTS: List[DirectMT5Account] = [
     # disabled account exactly like an absent one (direct_mt5_relay.py's
     # own _guard()), so nothing trades here until this flips to True.
     #
-    # giveback_min_peak/giveback_pct/max_risk_pct are still None --
-    # deliberately NOT defaulted to a guess. This is real FundedNext
-    # money; per the explicit instruction that prompted building
-    # engine/direct_account_protection.py in the first place ("before
-    # connecting fundednext 25k"), these need the user's own actual
-    # values, not an assumption, before this account should ever be
-    # enabled.
+    # [REVISED 2026-09-08, explicit user instruction: "same thing
+    # whatever we added for pineconnector"] giveback_min_peak/_pct/
+    # max_risk_pct set to PineConnector's own current live values
+    # (config.DAILY_GIVEBACK_MIN_PEAK=$100, DAILY_GIVEBACK_PCT=25%,
+    # FUNDEDNEXT_MAX_RISK_PCT default=3% -- confirmed not overridden in
+    # the old VPS's own .env before copying, not assumed).
+    #
+    # IMPORTANT: this account_login (12034354) is the EXACT SAME real
+    # FundedNext account PineConnector already relays to on the old VPS
+    # (FUNDEDNEXT_MT5_LOGIN there is also 12034354) -- not a separate
+    # account. Presumed intentional given the user's stated long-term
+    # plan to replace PineConnector/TradeSgnl with direct-MT5 for FX, but
+    # flagged explicitly: if PineConnector's real_relay_enabled is ever
+    # turned back on for this account while this direct connection is
+    # ALSO enabled, both paths would send independent real orders to the
+    # same live account. Only one should ever be active at a time.
     DirectMT5Account(
         label="fundednext-25k",
         terminal_path=r"C:\Program Files\Multi Mt5\MT5 -1\terminal64.exe",
         account_login=12034354,
         enabled=False,
         symbol_scope=None,
-        giveback_min_peak=None,
-        giveback_pct=None,
-        max_risk_pct=None,
+        giveback_min_peak=100.0,
+        giveback_pct=25.0,
+        max_risk_pct=3.0,
     ),
 ]
 
