@@ -76,7 +76,7 @@ import config
 from config import PAIRS
 from engine.paper_broker import broker
 from engine.real_giveback_source import FUNDEDNEXT_MT5_TERMINAL_PATH, FUNDEDNEXT_MT5_LOGIN
-from engine.tradesgnl_relay import _comment_id as _tradesgnl_comment_id, send_close as _tradesgnl_send_close
+from engine.tradesgnl_relay import _comment_id as _tradesgnl_comment_id, send_close as _tradesgnl_send_close, TRADESGNL_LICENSE_ID
 from engine.pineconnector_relay import _comment_id as _pineconnector_comment_id, send_close as _pineconnector_send_close
 from engine import direct_mt5_relay
 
@@ -278,8 +278,23 @@ def _detect_sync(acct: _AccountState) -> Dict:
         "lot_mismatches": [],
         "errors": [],
     }
+    # [FIX 2026-09-08, found live: continuous false "desync" alerts on the
+    # new VPS] "No login configured" and "TradeSgnl's relay deliberately
+    # inert on this deployment" are both PERMANENT, BY-DESIGN states, same
+    # as every other "blank keeps this inert" credential in this codebase
+    # -- neither should ever alert. They were being appended to `errors`,
+    # which discord_alerts.alert_sync_heartbeat() then surfaced as a
+    # "🔁 Trade sync desync detected" embed every single 5-minute cycle,
+    # forever, on any deployment where an account is genuinely never meant
+    # to run (e.g. TradeSgnl's terminal was never installed on the new
+    # VPS -- config.py is shared across VPSes via git, this module's
+    # TRADESGNL_ACCOUNT/FUNDEDNEXT_ACCOUNT constants are not). Silently
+    # skip instead -- "reachable: False" already communicates the state to
+    # any caller that wants it, without treating a deliberate non-config
+    # as a problem to alert on.
     if not acct.account_login:
-        result["errors"].append(f"{acct.label}: no account login configured -- nothing to reconcile against")
+        return result
+    if acct.label == "TradeSgnl" and not TRADESGNL_LICENSE_ID:
         return result
     if not acct.terminal_running():
         acct.mark_unreachable()
