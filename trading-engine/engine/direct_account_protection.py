@@ -43,6 +43,40 @@ from config import COMMISSION_PER_LOT_PER_SIDE_USD, DirectMT5Account
 IST_OFFSET = timedelta(hours=5, minutes=30)
 MT5_SERVER_UTC_OFFSET = timedelta(hours=3)
 
+# [ADD 2026-09-08, explicit user instruction: "yes align it to 5 AM IST"]
+# The profit-lock feature specifically (NOT this account's giveback state,
+# and NOT currencyOnly's own general _current_ist_date day-tracker in
+# orchestrator.py, which stays plain-midnight-IST -- currencyOnly has no
+# 5 AM reopen concept anywhere else in its config, unlike the Forex app)
+# anchors "today" to 5 AM IST instead, matching the Forex app's own
+# engine/profit_lock.py (itself matching account_daily_cap.py's
+# _trading_day_ist, the boundary every OTHER daily cap in that codebase
+# uses). This account's real P&L target is genuinely shared across both
+# apps, so the day boundary needs to agree between them too -- otherwise
+# the two apps could disagree about whether it's still "yesterday" or
+# already "today" in the 12 AM-5 AM IST window, e.g. this app's pause
+# flag resetting at midnight while the Forex app's stays held until 5 AM.
+TRADING_DAY_START_HOUR_IST = 5
+
+
+def _trading_day_ist(dt: datetime) -> str:
+    """Calendar date (IST) of the 5AM-to-5AM trading day a timestamp falls
+    in -- anything before 5:00 AM IST belongs to the PREVIOUS day's
+    session. Exact same logic as the Forex app's account_daily_cap.py::
+    _trading_day_ist, kept independent (not imported -- separate
+    codebase, separate deployment) rather than shared."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    ist = dt.astimezone(timezone.utc) + IST_OFFSET
+    if ist.hour < TRADING_DAY_START_HOUR_IST:
+        ist = ist - timedelta(days=1)
+    return ist.date().isoformat()
+
+
+def trading_day_ist_now() -> str:
+    return _trading_day_ist(datetime.now(timezone.utc))
+
+
 _GIVEBACK_STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "storage", "direct_giveback_state.json")
 _PROFIT_LOCK_STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "storage", "direct_profit_lock_state.json")
 
@@ -238,7 +272,7 @@ def _get_account_totals_sync(account: DirectMT5Account) -> Optional[Dict]:
 
     try:
         now_utc = datetime.now(timezone.utc)
-        today = _ist_date_str(now_utc)
+        today = _trading_day_ist(now_utc)  # 5 AM IST boundary -- see module-level note
         frm_server = now_utc - timedelta(days=2) + timedelta(hours=account.server_utc_offset_hours)
         to_server = now_utc + timedelta(days=1) + timedelta(hours=account.server_utc_offset_hours)
         deals = mt5.history_deals_get(frm_server, to_server)
@@ -250,7 +284,7 @@ def _get_account_totals_sync(account: DirectMT5Account) -> Optional[Dict]:
             if getattr(d, "entry", None) != 1:  # exits only
                 continue
             true_utc = _to_true_utc(account, d.time)
-            if _ist_date_str(true_utc) != today:
+            if _trading_day_ist(true_utc) != today:
                 continue
             realized += d.profit + d.commission + d.swap
 

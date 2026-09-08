@@ -469,15 +469,23 @@ async def _check_direct_accounts_profit_lock() -> None:
         return
     _last_direct_profit_lock_check_at = now_ts
 
+    # [ADD 2026-09-08, explicit user instruction: "yes align it to 5 AM
+    # IST"] Deliberately NOT _current_ist_date (plain midnight IST, used
+    # for everything else in this file) -- this account's target is
+    # shared with the Forex app, which anchors it to a 5 AM IST trading
+    # day, so this feature specifically has to agree with that boundary.
+    # See direct_account_protection.py's own module-level note.
+    today_trading_day = direct_account_protection.trading_day_ist_now()
+
     for acct in protected:
-        if direct_account_protection.is_profit_lock_paused_today(acct, _current_ist_date):
+        if direct_account_protection.is_profit_lock_paused_today(acct, today_trading_day):
             continue
 
         result = await direct_account_protection.check_profit_lock_trigger(acct)
         if result is None or not result["should_pause"]:
             continue  # not reachable, or target not yet safely reached -- try again next cycle
 
-        direct_account_protection.mark_profit_lock_paused_today(acct, _current_ist_date)
+        direct_account_protection.mark_profit_lock_paused_today(acct, today_trading_day)
         await discord_alerts.alert_engine_event(
             f"🔒 PROFIT LOCK HIT — {acct.label}, new entries paused for today",
             f"Realized ${result['realized']:.2f}, floating ${result['floating']:.2f} "
@@ -885,7 +893,11 @@ async def _scan_once() -> None:
                 for acct in _direct_accounts_for_symbol(symbol):
                     if direct_account_protection.is_giveback_triggered_today(acct, _current_ist_date):
                         continue
-                    if direct_account_protection.is_profit_lock_paused_today(acct, _current_ist_date):
+                    # 5 AM IST boundary, not _current_ist_date -- see
+                    # _check_direct_accounts_profit_lock()'s own note.
+                    if direct_account_protection.is_profit_lock_paused_today(
+                        acct, direct_account_protection.trading_day_ist_now()
+                    ):
                         continue
                     if acct.max_risk_pct is not None:
                         is_long_acct = trade["side"] == "BULLISH"
