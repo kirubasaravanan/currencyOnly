@@ -59,7 +59,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
-DISCORD_AUTHORIZED_USER_ID = int(os.getenv("DISCORD_AUTHORIZED_USER_ID", "0"))
+# [FIX 2026-09-08, found deploying a fresh VPS] os.getenv's default only
+# applies when the key is entirely ABSENT -- a present-but-empty value
+# (exactly what .env.example's own template produces, and what this file
+# had on a brand new deployment) returns "", and int("") raises. `or "0"`
+# treats that empty string as falsy too, matching the documented "blank
+# keeps this inert" convention for every credential in this file.
+DISCORD_AUTHORIZED_USER_ID = int(os.getenv("DISCORD_AUTHORIZED_USER_ID", "0") or "0")
 CLOSE_ALL_COMMAND = "!closeall"
 STOP_DAY_COMMAND = "!stopday"
 CLOSE_SYMBOL_PREFIX = "!close "
