@@ -38,12 +38,13 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
-from config import DirectMT5Account
+from config import COMMISSION_PER_LOT_PER_SIDE_USD, DirectMT5Account
 
 IST_OFFSET = timedelta(hours=5, minutes=30)
 MT5_SERVER_UTC_OFFSET = timedelta(hours=3)
 
 _GIVEBACK_STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "storage", "direct_giveback_state.json")
+_PROFIT_LOCK_STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "storage", "direct_profit_lock_state.json")
 
 
 def _load_triggered_dates() -> Dict[str, str]:
@@ -69,6 +70,44 @@ def is_giveback_triggered_today(account: DirectMT5Account, now_ist_date: str) ->
 
 def mark_giveback_triggered_today(account: DirectMT5Account, now_ist_date: str) -> None:
     _save_triggered_date(account.label, now_ist_date)
+
+
+def _load_profit_lock_dates() -> Dict[str, str]:
+    try:
+        with open(os.path.abspath(_PROFIT_LOCK_STATE_FILE)) as f:
+            return json.load(f)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _save_profit_lock_dates(data: Dict[str, str]) -> None:
+    path = os.path.abspath(_PROFIT_LOCK_STATE_FILE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(data, f)
+
+
+def is_profit_lock_paused_today(account: DirectMT5Account, now_ist_date: str) -> bool:
+    return _load_profit_lock_dates().get(account.label) == now_ist_date
+
+
+def mark_profit_lock_paused_today(account: DirectMT5Account, now_ist_date: str) -> None:
+    data = _load_profit_lock_dates()
+    data[account.label] = now_ist_date
+    _save_profit_lock_dates(data)
+
+
+def clear_profit_lock_paused_today(account: DirectMT5Account) -> bool:
+    """Manual resume -- e.g. Discord's "!resumeprofit <label>". Removes
+    this account's entry entirely (today's or any stale one) so new
+    entries resume on the very next scan cycle. Returns whether there was
+    actually anything to clear."""
+    data = _load_profit_lock_dates()
+    if account.label not in data:
+        return False
+    del data[account.label]
+    _save_profit_lock_dates(data)
+    return True
 
 
 def _terminal_running(terminal_path: str) -> bool:
@@ -160,6 +199,114 @@ def _get_today_pnl_sync(account: DirectMT5Account) -> Optional[Dict]:
 async def get_today_pnl_state(account: DirectMT5Account) -> Optional[Dict]:
     import asyncio
     return await asyncio.to_thread(_get_today_pnl_sync, account)
+
+
+def _get_account_totals_sync(account: DirectMT5Account) -> Optional[Dict]:
+    """Whole-ACCOUNT realized (today) + floating P&L -- every deal and
+    open position on this login, regardless of which app or comment
+    placed it. [ADD 2026-09-08, explicit user instruction: "even include
+    gold also which is coming from other application... goal is to reach
+    150 per day"]
+
+    Deliberately NOT filtered by account.comment_prefix, unlike
+    _get_today_pnl_sync() above -- that one answers "how did OUR bot do
+    today", this one answers "how did the ACCOUNT do today", which is
+    what a profit target shared across two independent apps (this one and
+    the Forex/gold app, both trading the same FundedNext login) needs.
+    Since MT5's own P&L is server-authoritative, either app can read this
+    independently through its own terminal connection and both will see
+    identical numbers -- no cross-app state sharing required.
+
+    Floating P&L subtracts an ESTIMATED exit commission
+    (config.COMMISSION_PER_LOT_PER_SIDE_USD per open lot) since the real
+    account's own commission schedule isn't queryable directly -- same
+    stand-in the paper broker uses elsewhere. Deliberately conservative:
+    it slightly understates how much would actually be banked by closing
+    now, erring toward NOT treating it as safe to pause too early.
+
+    Same fail-open convention as get_today_pnl_state(): returns None
+    whenever the account can't be verified reachable this cycle, never a
+    fabricated number."""
+    if not _terminal_running(account.terminal_path):
+        return None
+    try:
+        import MetaTrader5 as mt5
+    except ImportError:
+        return None
+    if not _connect(mt5, account):
+        return None
+
+    try:
+        now_utc = datetime.now(timezone.utc)
+        today = _ist_date_str(now_utc)
+        frm_server = now_utc - timedelta(days=2) + timedelta(hours=account.server_utc_offset_hours)
+        to_server = now_utc + timedelta(days=1) + timedelta(hours=account.server_utc_offset_hours)
+        deals = mt5.history_deals_get(frm_server, to_server)
+        if deals is None:
+            return None
+
+        realized = 0.0
+        for d in deals:
+            if getattr(d, "entry", None) != 1:  # exits only
+                continue
+            true_utc = _to_true_utc(account, d.time)
+            if _ist_date_str(true_utc) != today:
+                continue
+            realized += d.profit + d.commission + d.swap
+
+        positions = mt5.positions_get() or ()
+        floating_gross = sum(p.profit + p.swap for p in positions)
+        est_exit_commission = sum(p.volume for p in positions) * COMMISSION_PER_LOT_PER_SIDE_USD
+        floating = floating_gross - est_exit_commission
+
+        return {
+            "reachable": True,
+            "realized": round(realized, 2),
+            "floating": round(floating, 2),
+            "combined": round(realized + floating, 2),
+            "open_position_count": len(positions),
+        }
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        mt5.shutdown()
+
+
+async def get_account_totals(account: DirectMT5Account) -> Optional[Dict]:
+    import asyncio
+    return await asyncio.to_thread(_get_account_totals_sync, account)
+
+
+async def check_profit_lock_trigger(account: DirectMT5Account) -> Optional[Dict]:
+    """Evaluate whether account.profit_lock_target has been reached
+    safely enough to pause new entries for the rest of the IST day.
+    [ADD 2026-09-08, explicit user instruction]
+
+    Pause when: today's realized P&L (whole account) >= profit_lock_target
+    AND (realized + floating) >= profit_lock_target.
+
+    The second clause is the point -- it's what stops a single realized
+    win from locking in a pause while an open losing position is about to
+    drag the day back under target; only pause once the target is safe
+    even in the worst case of closing everything right now. (The user's
+    original phrasing had a third clause -- "or floating P&L is also
+    positive" -- that's logically subsumed by the second: whenever
+    realized already meets the target, a non-negative floating P&L makes
+    realized+floating >= realized >= target automatically.)
+
+    Returns None (do nothing) if unreachable this cycle -- same fail-open
+    convention as the giveback reader; this is an opportunistic lock, not
+    a compliance rule, so a stale reading should never block trading."""
+    if account.profit_lock_target is None:
+        return None
+    totals = await get_account_totals(account)
+    if totals is None:
+        return None
+    should_pause = (
+        totals["realized"] >= account.profit_lock_target
+        and totals["combined"] >= account.profit_lock_target
+    )
+    return {**totals, "target": account.profit_lock_target, "should_pause": should_pause}
 
 
 def _position_risk_usd(mt5mod, pos) -> float:

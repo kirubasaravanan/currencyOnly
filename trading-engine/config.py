@@ -236,6 +236,20 @@ class DirectMT5Account:
     giveback_pct: Optional[float] = None             # % given back from peak that triggers the stop
     max_risk_pct: Optional[float] = None             # None disables the max-open-risk entry gate for this account
 
+    # [ADD 2026-09-08, explicit user instruction -- FundedNext 25k recovery
+    # plan after a $500 drawdown] A daily profit-lock target, checked
+    # against the WHOLE ACCOUNT's today's P&L (every deal/position on this
+    # login, not just ones this app placed -- "even include gold also
+    # which is coming from other application", since the Forex/gold app
+    # trades this same real login too). Once today's realized P&L reaches
+    # this AND closing everything right now would still net at least this
+    # much, new entries pause for the rest of the IST day -- existing open
+    # positions are left alone, nothing is force-closed. See
+    # engine/direct_account_protection.py's check_profit_lock_trigger()
+    # for the exact two-part condition and why. None disables it (default,
+    # every other account).
+    profit_lock_target: Optional[float] = None
+
 
 # Empty by default -- the master switch for this whole feature. Fill in
 # real entries once VPS terminal locations/logins/symbol splits are
@@ -306,6 +320,7 @@ DIRECT_MT5_ACCOUNTS: List[DirectMT5Account] = [
         giveback_min_peak=100.0,
         giveback_pct=25.0,
         max_risk_pct=3.0,
+        profit_lock_target=150.0,
     ),
 ]
 

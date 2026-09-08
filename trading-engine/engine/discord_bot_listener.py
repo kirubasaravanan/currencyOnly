@@ -46,6 +46,17 @@ PineConnector, the account actually carrying real risk, is ever affected.
 Paper is untouched by all three either way -- it stays a clean,
 continuous research baseline regardless of what happens on the real
 side, same reasoning as the give-back breaker.
+
+[ADD 2026-09-08, explicit user instruction -- FundedNext 25k recovery
+plan] A fourth command, Direct-MT5 side (config.DIRECT_MT5_ACCOUNTS),
+unrelated to the three above:
+  !resumeprofit LABEL -- manually clears that account's profit-lock pause
+                  (engine/direct_account_protection.py's
+                  is_profit_lock_paused_today), letting new entries
+                  resume before the day rolls over in IST. e.g.
+                  "!resumeprofit fundednext-25k". Does not touch open
+                  positions or any other protection flag (give-back,
+                  risk gate) for that account.
 """
 
 from __future__ import annotations
@@ -69,6 +80,7 @@ DISCORD_AUTHORIZED_USER_ID = int(os.getenv("DISCORD_AUTHORIZED_USER_ID", "0") or
 CLOSE_ALL_COMMAND = "!closeall"
 STOP_DAY_COMMAND = "!stopday"
 CLOSE_SYMBOL_PREFIX = "!close "
+RESUME_PROFIT_LOCK_PREFIX = "!resumeprofit "
 
 _client = None  # type: Optional["discord.Client"]
 
@@ -101,6 +113,23 @@ def start() -> None:
         if message.author.id != DISCORD_AUTHORIZED_USER_ID:
             return
         content = message.content.strip().lower()
+
+        if content.startswith(RESUME_PROFIT_LOCK_PREFIX):
+            import config
+            from engine import direct_account_protection
+
+            label = content[len(RESUME_PROFIT_LOCK_PREFIX):].strip()
+            acct = next((a for a in config.DIRECT_MT5_ACCOUNTS if a.label.lower() == label), None)
+            if acct is None:
+                known = ", ".join(a.label for a in config.DIRECT_MT5_ACCOUNTS) or "(none configured)"
+                await message.channel.send(f"Unknown account {label!r} -- must be one of: {known}")
+                return
+            cleared = direct_account_protection.clear_profit_lock_paused_today(acct)
+            if cleared:
+                await message.channel.send(f"Profit-lock pause cleared for {acct.label} -- new entries can resume.")
+            else:
+                await message.channel.send(f"{acct.label} wasn't paused by profit-lock today -- nothing to clear.")
+            return
 
         symbol: Optional[str] = None
         if content in (CLOSE_ALL_COMMAND, STOP_DAY_COMMAND):

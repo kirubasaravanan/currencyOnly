@@ -449,6 +449,44 @@ async def _check_direct_accounts_giveback_breaker() -> None:
         )
 
 
+# [ADD 2026-09-08, explicit user instruction -- FundedNext 25k recovery
+# plan] Only ever acts on an account that has profit_lock_target set.
+# Unlike the give-back breaker, this never closes anything -- it only
+# stops NEW entries, leaving whatever's already open to run its own
+# course. Shares the giveback breaker's rate-limit interval; no
+# correctness reason for a separate one.
+_last_direct_profit_lock_check_at = 0.0
+
+
+async def _check_direct_accounts_profit_lock() -> None:
+    global _last_direct_profit_lock_check_at
+    protected = [a for a in config.DIRECT_MT5_ACCOUNTS if a.enabled and a.profit_lock_target is not None]
+    if not protected:
+        return
+
+    now_ts = datetime.now(timezone.utc).timestamp()
+    if now_ts - _last_direct_profit_lock_check_at < GIVEBACK_CHECK_INTERVAL_SECONDS:
+        return
+    _last_direct_profit_lock_check_at = now_ts
+
+    for acct in protected:
+        if direct_account_protection.is_profit_lock_paused_today(acct, _current_ist_date):
+            continue
+
+        result = await direct_account_protection.check_profit_lock_trigger(acct)
+        if result is None or not result["should_pause"]:
+            continue  # not reachable, or target not yet safely reached -- try again next cycle
+
+        direct_account_protection.mark_profit_lock_paused_today(acct, _current_ist_date)
+        await discord_alerts.alert_engine_event(
+            f"🔒 PROFIT LOCK HIT — {acct.label}, new entries paused for today",
+            f"Realized ${result['realized']:.2f}, floating ${result['floating']:.2f} "
+            f"(combined ${result['combined']:.2f}) vs ${result['target']:.2f} target. "
+            f"Open positions untouched -- they'll run their own course. "
+            f"Resume with Discord `!resumeprofit {acct.label}` if needed.",
+        )
+
+
 async def _check_fundednext_aggregate_risk() -> None:
     """[ADD 2026-08-21, explicit user instruction -- "Build 2", upgraded
     same day from alert-only to actually acting] Standing monitor,
@@ -701,6 +739,7 @@ async def _scan_once() -> None:
     await _process_new_closed_trades(now)
     await _check_daily_giveback_breaker()
     await _check_direct_accounts_giveback_breaker()
+    await _check_direct_accounts_profit_lock()
     await _check_fundednext_aggregate_risk()
     await _check_session_rollover(now)
     await _check_eod_rollover(now)
@@ -845,6 +884,8 @@ async def _scan_once() -> None:
                 # unaffected -- same as before this addition.
                 for acct in _direct_accounts_for_symbol(symbol):
                     if direct_account_protection.is_giveback_triggered_today(acct, _current_ist_date):
+                        continue
+                    if direct_account_protection.is_profit_lock_paused_today(acct, _current_ist_date):
                         continue
                     if acct.max_risk_pct is not None:
                         is_long_acct = trade["side"] == "BULLISH"
