@@ -229,7 +229,37 @@ class DirectMT5Account:
 # decided. Every consumer (orchestrator.py's entry/partial/close loops,
 # trade_sync_heartbeat.ALL_ACCOUNTS) iterates this list and is a no-op
 # while it's empty.
-DIRECT_MT5_ACCOUNTS: List[DirectMT5Account] = []
+#
+# [ADD 2026-09-08, explicit user instruction] First real entry, on the new
+# VPS (172.93.105.196) -- "MT5 1" from the planned 6-7 terminal rollout,
+# the demo account (same login TradeSgnl already uses on the OLD VPS,
+# 110875560/MetaQuotes-Demo, confirmed live via account_info() on the
+# base "MetaTrader 5" install specifically, not one of the "Multi Mt5"
+# folders). symbol_scope=None -- "runs without any restriction" per the
+# user's own plan for this account's role.
+#
+# Deliberately staged: this VPS's storage/real_relay_state.json was
+# pre-seeded to {"enabled": false} BEFORE the engine's first start there,
+# so populating this list does not itself cause any live order --
+# entries still need real_relay_enabled flipped on explicitly (POST
+# /real-relay) as a separate, deliberate step. See this list's own
+# consumer-loop comments in orchestrator.py for what is/isn't gated by
+# that switch.
+#
+# Same underlying account as TradeSgnl on the OLD VPS -- TradeSgnl's
+# real_relay_enabled is off there too (explicit user instruction, same
+# day), so nothing currently double-trades this login from two paths.
+# Worth remembering if TradeSgnl is ever turned back on for this account
+# while this direct connection is also live.
+DIRECT_MT5_ACCOUNTS: List[DirectMT5Account] = [
+    DirectMT5Account(
+        label="demo-unrestricted",
+        terminal_path=r"C:\Program Files\MetaTrader 5\terminal64.exe",
+        account_login=110875560,
+        enabled=True,
+        symbol_scope=None,
+    ),
+]
 
 OANDA_SYMBOL_MAP: Dict[str, str] = {
     "EURUSD": "EUR_USD", "GBPUSD": "GBP_USD", "USDJPY": "USD_JPY",
