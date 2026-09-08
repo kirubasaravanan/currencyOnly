@@ -223,6 +223,19 @@ class DirectMT5Account:
     magic: Optional[int] = None                      # None -> caller defaults to account_login
     server_utc_offset_hours: float = 3.0             # per-account, not a shared global -- see trade_sync_heartbeat.py
 
+    # [ADD 2026-09-08, explicit user instruction] Per-account real-money
+    # protection -- generalizes the PineConnector-only give-back breaker
+    # (orchestrator._check_daily_giveback_breaker) and 3%-risk gate
+    # (real_risk_source.py) so each direct-MT5 account can have its own
+    # independent values, or share a helper with another account, per
+    # engine/direct_account_protection.py. All three None/unset by
+    # default -- same "blank keeps this inert" convention as every other
+    # credential/threshold in this codebase; an account with no real
+    # money (like the demo account) simply never sets these.
+    giveback_min_peak: Optional[float] = None        # $ -- breaker doesn't apply below this peak (avoids acting on noise)
+    giveback_pct: Optional[float] = None             # % given back from peak that triggers the stop
+    max_risk_pct: Optional[float] = None             # None disables the max-open-risk entry gate for this account
+
 
 # Empty by default -- the master switch for this whole feature. Fill in
 # real entries once VPS terminal locations/logins/symbol splits are

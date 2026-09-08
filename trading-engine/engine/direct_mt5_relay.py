@@ -451,6 +451,100 @@ def _modify_sl_tp_sync(account: DirectMT5Account, trade: Dict, new_sl: float, ne
             mt5.shutdown()
 
 
+def _close_all_positions_sync(account: DirectMT5Account, source: str) -> Dict:
+    """[ADD 2026-09-08, explicit user instruction] Closes every open
+    position on THIS account matching its own magic number, regardless of
+    symbol -- the direct-MT5 counterpart to orchestrator.py's
+    close_all_real_positions() (which is PineConnector-only). Used by the
+    per-account give-back breaker in engine/direct_account_protection.py.
+
+    Doesn't go through a paper `trade` dict like send_close() does -- an
+    emergency all-close has no single paper trade to match against, it
+    needs to enumerate the account's OWN real positions directly. Same
+    "verify, don't trust the retcode" principle as every other close path
+    in this module: re-reads positions_get() after sending, reports
+    anything still open as a genuine failure rather than assuming clear."""
+    result = {"closed": [], "failed": [], "still_open": []}
+    if not _guard(account):
+        return result
+    if not _terminal_running(account.terminal_path):
+        result["failed"].append("terminal not running")
+        return result
+    try:
+        import MetaTrader5 as mt5
+    except ImportError:
+        result["failed"].append("MetaTrader5 package unavailable")
+        return result
+
+    with MT5_LOCK:
+        if not _connect(mt5, account):
+            mt5.shutdown()
+            result["failed"].append("connect/login mismatch")
+            return result
+        try:
+            positions = mt5.positions_get() or ()
+            ours = [p for p in positions if p.magic == _magic(account)]
+            tickets_attempted = []
+            for position in ours:
+                symbol = position.symbol
+                is_closing_long = position.type == mt5.ORDER_TYPE_BUY
+                tick = mt5.symbol_info_tick(symbol)
+                info = mt5.symbol_info(symbol)
+                if tick is None or info is None:
+                    result["failed"].append(symbol)
+                    continue
+                price = tick.bid if is_closing_long else tick.ask
+                request = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": symbol,
+                    "volume": position.volume,
+                    "type": mt5.ORDER_TYPE_SELL if is_closing_long else mt5.ORDER_TYPE_BUY,
+                    "position": position.ticket,
+                    "price": price,
+                    "deviation": DEVIATION_POINTS,
+                    "magic": _magic(account),
+                    "comment": f"{account.comment_prefix}{source}-closeall",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": _pick_filling_mode(mt5, info),
+                }
+                send_result = mt5.order_send(request)
+                if send_result is None or send_result.retcode != mt5.TRADE_RETCODE_DONE:
+                    print(f"[direct_mt5_relay:{account.label}] close-all REJECTED (source={source}) "
+                          f"{symbol}: {getattr(send_result, 'retcode', 'none')}")
+                    result["failed"].append(symbol)
+                    continue
+                tickets_attempted.append((symbol, position.ticket))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[direct_mt5_relay:{account.label}] close_all_positions error: {exc}")
+            result["failed"].append(str(exc))
+            return result
+        finally:
+            mt5.shutdown()
+
+    import time
+    time.sleep(CLOSE_VERIFY_DELAY_SECONDS)
+    with MT5_LOCK:
+        if not _connect(mt5, account):
+            mt5.shutdown()
+            for symbol, _ in tickets_attempted:
+                result["still_open"].append(symbol)
+            return result
+        try:
+            for symbol, ticket in tickets_attempted:
+                still_open = mt5.positions_get(ticket=ticket)
+                if still_open:
+                    result["still_open"].append(symbol)
+                else:
+                    result["closed"].append(symbol)
+        finally:
+            mt5.shutdown()
+    return result
+
+
+async def close_all_positions(account: DirectMT5Account, source: str = "unknown") -> Dict:
+    return await asyncio.to_thread(_close_all_positions_sync, account, source)
+
+
 async def send_entry(account: DirectMT5Account, trade: Dict) -> Optional[Dict]:
     return await asyncio.to_thread(_send_entry_sync, account, trade)
 

@@ -29,7 +29,7 @@ from typing import Dict, List, Optional
 import config
 from config import PAIRS, MAJORS, MTF_TIMEFRAMES, ENGINE_LOOP_SECONDS, SESSIONS_UTC, state
 from data.market_data import market_data
-from engine import risk, correlation, trade_manager, currency_strength, discord_alerts, tradesgnl_relay, pineconnector_relay, direct_mt5_relay, trade_sync_heartbeat, real_giveback_source, real_risk_source
+from engine import risk, correlation, trade_manager, currency_strength, discord_alerts, tradesgnl_relay, pineconnector_relay, direct_mt5_relay, trade_sync_heartbeat, real_giveback_source, real_risk_source, direct_account_protection
 from engine.analytics import NON_STRATEGY_EXIT_REASONS
 from engine.entry import entry_signal, _in_session
 from engine.macro_filter import calendar
@@ -399,6 +399,56 @@ async def _check_daily_giveback_breaker() -> None:
     await discord_alerts.alert_daily_giveback_triggered(peak, current, closed_symbols)
 
 
+# [ADD 2026-09-08, explicit user instruction] Direct-MT5 counterpart to
+# _check_daily_giveback_breaker() above, generalized per-account rather
+# than hardcoded to one -- see engine/direct_account_protection.py's own
+# docstring. Only ever acts on an account that has giveback_min_peak set;
+# an account with it unset (None) is skipped entirely, same as before
+# this function existed. Shares one rate-limit timer across all direct
+# accounts checked in a cycle -- a rate-limit, not a correctness
+# requirement, so nothing needs a per-account timer.
+_last_direct_giveback_check_at = 0.0
+
+
+async def _check_direct_accounts_giveback_breaker() -> None:
+    global _last_direct_giveback_check_at
+    protected = [a for a in config.DIRECT_MT5_ACCOUNTS if a.enabled and a.giveback_min_peak is not None]
+    if not protected:
+        return
+
+    now_ts = datetime.now(timezone.utc).timestamp()
+    if now_ts - _last_direct_giveback_check_at < GIVEBACK_CHECK_INTERVAL_SECONDS:
+        return
+    _last_direct_giveback_check_at = now_ts
+
+    for acct in protected:
+        if direct_account_protection.is_giveback_triggered_today(acct, _current_ist_date):
+            continue
+
+        real_state = await direct_account_protection.get_today_pnl_state(acct)
+        if real_state is None:
+            continue  # not reachable this cycle -- no data, no action, try again next cycle
+
+        peak = real_state["peak"]
+        current = real_state["current"]
+
+        if peak < acct.giveback_min_peak:
+            continue
+        giveback_pct = acct.giveback_pct if acct.giveback_pct is not None else config.DAILY_GIVEBACK_PCT
+        if current > peak * (1 - giveback_pct / 100.0):
+            continue
+
+        direct_account_protection.mark_giveback_triggered_today(acct, _current_ist_date)
+        close_result = await direct_mt5_relay.close_all_positions(acct, source="giveback_breaker")
+        given_back = peak - current
+        await discord_alerts.alert_engine_event(
+            f"🛑 GIVE-BACK LIMIT HIT — {acct.label}, closing all positions, entries paused for today",
+            f"Peaked at ${peak:.2f}, now ${current:.2f} (gave back ${given_back:.2f}). "
+            f"Closed: {close_result['closed']}. Failed: {close_result['failed']}. "
+            f"Still open (unverified): {close_result['still_open']}.",
+        )
+
+
 async def _check_fundednext_aggregate_risk() -> None:
     """[ADD 2026-08-21, explicit user instruction -- "Build 2", upgraded
     same day from alert-only to actually acting] Standing monitor,
@@ -650,6 +700,7 @@ async def _scan_once() -> None:
     await _process_partial_takes()
     await _process_new_closed_trades(now)
     await _check_daily_giveback_breaker()
+    await _check_direct_accounts_giveback_breaker()
     await _check_fundednext_aggregate_risk()
     await _check_session_rollover(now)
     await _check_eod_rollover(now)
@@ -781,15 +832,27 @@ async def _scan_once() -> None:
                     # existing heartbeat/giveback checks already surface real
                     # connectivity problems with this account.
 
-                # [ADD 2026-08-26] Direct-MT5 accounts -- deliberately
-                # gated ONLY by the master real_relay_enabled switch
-                # above, not by the give-back breaker, manual-block, or
-                # 3%-risk check, which are PineConnector/FundedNext-
-                # specific mechanisms today. A newly-configured direct
-                # account has none of those extra protections yet -- see
-                # config.DIRECT_MT5_ACCOUNTS's own docstring. No-op while
-                # that list is empty (its default).
+                # [ADD 2026-08-26] Direct-MT5 accounts -- gated by the
+                # master real_relay_enabled switch above, PLUS
+                # [ADD 2026-09-08] each account's OWN give-back/risk
+                # protection if configured (config.DirectMT5Account's
+                # giveback_*/max_risk_pct fields, see
+                # engine/direct_account_protection.py) -- unlike the
+                # PineConnector-specific mechanisms, these are per-account,
+                # not shared, so one account's protection (or lack of it)
+                # never affects another's. An account with none of these
+                # fields set (e.g. a demo account with no real money) is
+                # unaffected -- same as before this addition.
                 for acct in _direct_accounts_for_symbol(symbol):
+                    if direct_account_protection.is_giveback_triggered_today(acct, _current_ist_date):
+                        continue
+                    if acct.max_risk_pct is not None:
+                        is_long_acct = trade["side"] == "BULLISH"
+                        risk_check = await direct_account_protection.check_account_risk_ok(
+                            acct, symbol, trade["lots"], trade["entry_price"], trade["sl_price"], is_long_acct
+                        )
+                        if risk_check is None or risk_check["would_exceed"]:
+                            continue  # unreachable (fail closed) or would breach -- skip this account only
                     await direct_mt5_relay.send_entry(acct, trade)
         open_symbols.add(symbol)
 
