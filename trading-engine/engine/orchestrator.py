@@ -697,6 +697,36 @@ def _drawdown_pct() -> float:
 # trading is allowed again so a future re-breach can alert fresh.
 _last_risk_block_reason: Optional[str] = None
 
+# [ADD 2026-09-09, explicit user instruction: "i know we are blocking the
+# trades during time period, can we get a discord message for that"]
+# calendar.in_blackout() (entry.py's own gate) has been silent since it
+# was built. Same "alert on transition, not every scan" convention as
+# _last_risk_block_reason above -- keyed on event title + country so a
+# second, different event starting right after the first one ends still
+# gets its own alert.
+_last_news_blackout_key: Optional[str] = None
+
+
+async def _check_news_blackout_alert() -> None:
+    """Hoisted to a single account-wide check per scan, same reasoning as
+    _check_risk_limit_alert -- calendar.in_blackout() is symbol-agnostic,
+    checking it once per pair would be redundant and would multiply the
+    (cached, but not free) calendar fetch for no benefit."""
+    global _last_news_blackout_key
+    state = calendar.in_blackout()
+    if not state["blocked"]:
+        _last_news_blackout_key = None
+        return
+    key = f"{state['event']}|{state['country']}"
+    if key == _last_news_blackout_key:
+        return
+    _last_news_blackout_key = key
+    now = datetime.now(timezone.utc)
+    event_time = now + timedelta(minutes=state["minutes_to_event"])
+    blackout_start = event_time - timedelta(minutes=config.NEWS_BLACKOUT_MINUTES)
+    blackout_end = event_time + timedelta(minutes=config.NEWS_BLACKOUT_MINUTES)
+    await discord_alerts.alert_news_blackout(state["event"], state["country"], blackout_start, blackout_end)
+
 
 async def _check_risk_limit_alert(risk_check: Dict) -> None:
     global _last_risk_block_reason
@@ -830,6 +860,7 @@ async def _scan_once() -> None:
     # state (see _check_risk_limit_alert below).
     risk_check = risk.can_open_new_trade(broker.open_positions, broker.closed_trades, broker.equity, broker.peak_equity)
     await _check_risk_limit_alert(risk_check)
+    await _check_news_blackout_alert()
 
     open_symbols = {t["symbol"] for t in broker.open_positions}
     for symbol, frames in frames_by_symbol.items():

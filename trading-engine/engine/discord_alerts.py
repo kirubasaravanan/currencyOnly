@@ -472,6 +472,31 @@ async def alert_risk_limit_breached(reason: str, equity: float, peak_equity: flo
     await _send_embed(embed)
 
 
+async def alert_news_blackout(event_title: str, country: str, blackout_start: datetime, blackout_end: datetime) -> None:
+    """[ADD 2026-09-09, explicit user instruction: "i know we are blocking
+    the trades during time period, can we get a discord message for that"]
+    entry.py's calendar.in_blackout() gate (config.NEWS_BLACKOUT_MINUTES,
+    symbol-agnostic -- blocks every pair, not just the event's own
+    currency) has been completely silent since it was built -- no log, no
+    alert, same gap alert_risk_limit_breached fixed for the risk-limit
+    gate a few weeks earlier. orchestrator._check_news_blackout_alert()
+    calls this once on the transition into a NEW event's blackout (not
+    every scan cycle it stays active -- same convention as that function).
+    Carries both the start and end time so a separate "resumed" message
+    isn't needed -- the window is fixed and known the moment this fires."""
+    embed = {
+        "title": "📅 News blackout -- new entries paused for all pairs",
+        "color": AMBER,
+        "fields": [
+            {"name": "Event", "value": f"{event_title} ({country})", "inline": False},
+            {"name": "Blocked from", "value": blackout_start.strftime("%H:%M UTC"), "inline": True},
+            {"name": "Blocked until", "value": blackout_end.strftime("%H:%M UTC"), "inline": True},
+        ],
+        "description": "Existing open positions are unaffected -- this only blocks new entries during the window.",
+    }
+    await _send_embed(embed)
+
+
 async def alert_sod_status(date_str: str, equity: float, peak_equity: float, drawdown_pct: float) -> None:
     """[ADD 2026-08-18, explicit user instruction: "a start of the day
     message kind of"] Proactive daily status ping, independent of whether
