@@ -361,38 +361,33 @@ DIRECT_MT5_ACCOUNTS: List[DirectMT5Account] = [
     # ever turned back on for this account on old VPS while this stays
     # enabled, both paths would send independent real orders to the same
     # live account again.
-    # [CHANGED 2026-09-09, explicit user instruction: "lets keep only the
-    # below currencies included in the fundednxt and rest we exclude"]
-    # Superseded the single-pair EURNZD deny-list (kept in history above
-    # for context) with a full 9-pair ALLOW-list -- only pairs whose
-    # profit factor stayed > 1.2 in at least one of three outlier-check
-    # passes on the demo account's real 30-day history (raw / best-win-
-    # removed / best-win-and-worst-loss-removed) are included:
-    # AUDJPY, EURJPY, NZDJPY, AUDCAD, AUDUSD, EURAUD, USDCAD, GBPJPY,
-    # GBPAUD. The other 12 (including EURNZD) are excluded.
-    #
-    # [FLAGGED before implementing, explicit instruction to proceed
-    # anyway] PINECONNECTOR_EXCLUDED_PAIRS's own history above documents
-    # that an allow-list was already tried once on real PineConnector
-    # money and UNDERPERFORMED a deny-list over the same window (+$212 vs
-    # +$527) -- which is why that set stayed a deny-list despite having a
-    # "confirmed good" pairs list available. Same tradeoff applies here in
-    # principle; noted, not blocking, since this is easily reversible and
-    # the user reviewed the full data before choosing this.
+    # [CHANGED 2026-09-09, explicit user instruction: "lets try with this
+    # for some time" -- approach "D" from the comparison] Superseded the
+    # 9-pair ALLOW-list (kept in history above for context) with a
+    # broader 17-pair DENY-list: exclude only the 4 pairs confirmed
+    # consistently bad across BOTH the full 30-day window AND a
+    # through-Sep-4-only replay (EURUSD, GBPUSD, CADJPY, EURNZD) -- the
+    # 9-pair allow-list had the single best numbers of every approach
+    # compared, but 2 of its 9 members (AUDJPY, and to a lesser extent
+    # others) turned out to be carried almost entirely by the most recent
+    # week's trades once checked against the Sep-4-only replay, i.e.
+    # fragile/recency-dependent, not because they were themselves cross-
+    # window robust. This 17-pair set traded some raw upside for real
+    # diversification (17 vs 9 pairs) and a selection rule that held up
+    # in both time windows rather than one -- same reasoning
+    # PINECONNECTOR_EXCLUDED_PAIRS's own deny-list-beat-allow-list history
+    # already established for that account.
     #
     # session_windows_ist/calibration for every pair is UNCHANGED --
     # this only gates which symbols reach THIS real account.
-    # demo-unrestricted has no symbol_scope set, so all 21 pairs (EURNZD
-    # included) keep trading there unaffected, for continued observation.
+    # demo-unrestricted has no symbol_scope set, so all 21 pairs keep
+    # trading there unaffected, for continued observation.
     DirectMT5Account(
         label="fundednext-25k",
         terminal_path=r"C:\Program Files\Multi Mt5\MT5 -1\terminal64.exe",
         account_login=12034354,
         enabled=True,
-        symbol_scope=frozenset({
-            "AUDJPY", "EURJPY", "NZDJPY", "AUDCAD", "AUDUSD",
-            "EURAUD", "USDCAD", "GBPJPY", "GBPAUD",
-        }),
+        symbol_scope=frozenset(p for p in PAIRS if p not in {"EURUSD", "GBPUSD", "CADJPY", "EURNZD"}),
         giveback_min_peak=100.0,
         giveback_pct=25.0,
         max_risk_pct=3.0,
