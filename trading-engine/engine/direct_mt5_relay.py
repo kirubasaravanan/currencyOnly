@@ -233,17 +233,31 @@ def _find_position(mt5mod, account: DirectMT5Account, symbol: str):
 
 
 def _send_close_sync(account: DirectMT5Account, trade: Dict, source: str) -> bool:
+    # [FIX 2026-09-09, found live: EURUSD/GBPUSD closed on demo-unrestricted
+    # but not fundednext-25k, with ZERO log trace anywhere -- confirmed via
+    # MT5's own deal REASON field that demo's close was EXPERT (our own
+    # code, not manual), so the SAME dispatch loop reached fundednext-25k
+    # too, and something here returned False completely silently. Every
+    # early-return below now at least prints, so a repeat can be diagnosed
+    # from the log instead of vanishing without a trace again.]
     if not _guard(account):
+        print(f"[direct_mt5_relay:{account.label}] SKIPPED close (source={source}) for trade "
+              f"{trade.get('id')} ({trade.get('symbol')}) -- account not enabled or no login configured")
         return False
     if not _terminal_running(account.terminal_path):
+        print(f"[direct_mt5_relay:{account.label}] SKIPPED close (source={source}) for trade "
+              f"{trade.get('id')} ({trade.get('symbol')}) -- terminal not running")
         return False
     try:
         import MetaTrader5 as mt5
     except ImportError:
+        print(f"[direct_mt5_relay:{account.label}] SKIPPED close (source={source}) -- MetaTrader5 package unavailable")
         return False
 
     with MT5_LOCK:
         if not _connect(mt5, account):
+            print(f"[direct_mt5_relay:{account.label}] SKIPPED close (source={source}) for trade "
+                  f"{trade.get('id')} ({trade.get('symbol')}) -- connect/login mismatch")
             mt5.shutdown()
             return False
         try:
@@ -258,6 +272,8 @@ def _send_close_sync(account: DirectMT5Account, trade: Dict, source: str) -> boo
             tick = mt5.symbol_info_tick(symbol)
             info = mt5.symbol_info(symbol)
             if tick is None or info is None:
+                print(f"[direct_mt5_relay:{account.label}] SKIPPED close (source={source}) for trade "
+                      f"{trade['id']} ({symbol}) -- no symbol_info/tick")
                 return False
             price = tick.bid if is_closing_long else tick.ask
 
@@ -318,17 +334,26 @@ def _verify_closed_sync(account: DirectMT5Account, symbol: str, ticket: int, sou
 
 
 def _send_partial_close_sync(account: DirectMT5Account, trade: Dict, source: str) -> bool:
+    # [FIX 2026-09-09] Same silent-failure gap as _send_close_sync -- see
+    # its own note. Every early-return here now prints too.
     if not _guard(account):
+        print(f"[direct_mt5_relay:{account.label}] SKIPPED partial-close (source={source}) for trade "
+              f"{trade.get('id')} ({trade.get('symbol')}) -- account not enabled or no login configured")
         return False
     if not _terminal_running(account.terminal_path):
+        print(f"[direct_mt5_relay:{account.label}] SKIPPED partial-close (source={source}) for trade "
+              f"{trade.get('id')} ({trade.get('symbol')}) -- terminal not running")
         return False
     try:
         import MetaTrader5 as mt5
     except ImportError:
+        print(f"[direct_mt5_relay:{account.label}] SKIPPED partial-close (source={source}) -- MetaTrader5 package unavailable")
         return False
 
     with MT5_LOCK:
         if not _connect(mt5, account):
+            print(f"[direct_mt5_relay:{account.label}] SKIPPED partial-close (source={source}) for trade "
+                  f"{trade.get('id')} ({trade.get('symbol')}) -- connect/login mismatch")
             mt5.shutdown()
             return False
         try:
@@ -341,6 +366,8 @@ def _send_partial_close_sync(account: DirectMT5Account, trade: Dict, source: str
 
             info = mt5.symbol_info(symbol)
             if info is None:
+                print(f"[direct_mt5_relay:{account.label}] SKIPPED partial-close (source={source}) for trade "
+                      f"{trade['id']} ({symbol}) -- no symbol_info")
                 return False
             # Paper's own authoritative reduction amount, matching
             # pineconnector_relay.py's own approach -- not a fraction
@@ -355,6 +382,8 @@ def _send_partial_close_sync(account: DirectMT5Account, trade: Dict, source: str
             is_closing_long = position.type == mt5.ORDER_TYPE_BUY
             tick = mt5.symbol_info_tick(symbol)
             if tick is None:
+                print(f"[direct_mt5_relay:{account.label}] SKIPPED partial-close (source={source}) for trade "
+                      f"{trade['id']} ({symbol}) -- no tick")
                 return False
             price = tick.bid if is_closing_long else tick.ask
 

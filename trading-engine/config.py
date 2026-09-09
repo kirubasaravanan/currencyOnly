@@ -265,6 +265,31 @@ class DirectMT5Account:
     # every other account).
     profit_lock_target: Optional[float] = None
 
+    # [ADD 2026-09-09, explicit user instruction, found live: paper closed
+    # EURUSD/GBPUSD, demo-unrestricted's close silently succeeded but
+    # fundednext-25k's silently never landed -- zero log trace, confirmed
+    # via MT5's own deal REASON field that demo's was our own code
+    # (EXPERT), not manual. trade_sync_heartbeat.py already detects this
+    # exact case (still_open_on_real) every 5 minutes; it just wasn't
+    # allowed to ACT on it. This flag opts THIS account's close (and
+    # partial-close, see below) desync into auto-remediation via the
+    # heartbeat -- default False (every other account, and the module's
+    # own global HEARTBEAT_AUTO_ACTIONS_ENABLED, stay untouched: that one's
+    # been paused since the 2026-08-25 GBPCAD incident on TradeSgnl/
+    # PineConnector and this doesn't reopen it). True here and on
+    # demo-unrestricted specifically, per explicit instruction: "check for
+    # demo account is closed or not and funded account is closed or not if
+    # not close send close command to close the demo account and
+    # fundednext account".
+    #
+    # Partial closes are handled too, not just full closes: if paper only
+    # reduced this trade's lot size (not a full close), the heartbeat's
+    # lot-mismatch check sends a matching PARTIAL close (direct_mt5_relay.
+    # send_partial_close(), which computes the reduction from paper's own
+    # original_lots-vs-lots, never a fraction/guess) -- never a full close
+    # of a position paper still holds part of.
+    sync_auto_close_enabled: bool = False
+
 
 # Empty by default -- the master switch for this whole feature. Fill in
 # real entries once VPS terminal locations/logins/symbol splits are
@@ -300,6 +325,7 @@ DIRECT_MT5_ACCOUNTS: List[DirectMT5Account] = [
         account_login=110875560,
         enabled=True,
         symbol_scope=None,
+        sync_auto_close_enabled=True,
     ),
     # [ADD 2026-09-08, explicit user instruction] FundedNext 25k -- "MT5 2"
     # from the planned rollout, on the "Multi Mt5\MT5 -1" terminal
@@ -345,6 +371,7 @@ DIRECT_MT5_ACCOUNTS: List[DirectMT5Account] = [
         giveback_pct=25.0,
         max_risk_pct=3.0,
         profit_lock_target=150.0,
+        sync_auto_close_enabled=True,
     ),
 ]
 

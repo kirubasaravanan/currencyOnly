@@ -231,7 +231,31 @@ async def alert_sync_heartbeat(results_by_account: Dict) -> None:
                 "value": f"paper closed {s['paper_closed_at']} ({s['paper_close_reason']}) -- sent a close for real P&L ${s['real_profit']:.2f}, {s['real_volume']} lots, but couldn't confirm it actually closed. Check the account directly.",
                 "inline": False,
             })
+        # [ADD 2026-09-09, explicit user instruction] partial_corrected/
+        # partial_correction_failed are outcomes of an auto-correction
+        # attempt (Direct-MT5 accounts with sync_auto_close_enabled only --
+        # see trade_sync_heartbeat.run_heartbeat_for's own note). A
+        # mismatch that got an outcome is reported via one of these two,
+        # never also through the generic "not auto-corrected" line below,
+        # to avoid two contradictory-looking fields for the same trade.
+        _handled_mismatch_ids = {m["trade_id"] for m in result.get("partial_corrected", [])} | {
+            m["trade_id"] for m in result.get("partial_correction_failed", [])
+        }
+        for m in result.get("partial_corrected", []):
+            fields.append({
+                "name": f"🟢 [{account}] {m['symbol']} lot-size mismatch — auto-corrected",
+                "value": f"paper showed {m['paper_lots']} lots, real ticket {m['real_ticket']} showed {m['real_volume']} lots -- sent a matching partial close to bring the real side down to paper's.",
+                "inline": False,
+            })
+        for m in result.get("partial_correction_failed", []):
+            fields.append({
+                "name": f"🟣🔺 [{account}] {m['symbol']} lot-size mismatch — auto-correction FAILED",
+                "value": f"paper shows {m['paper_lots']} lots, real ticket {m['real_ticket']} shows {m['real_volume']} lots -- attempted a matching partial close, it didn't go through. Check the account directly.",
+                "inline": False,
+            })
         for m in result.get("lot_mismatches", []):
+            if m["trade_id"] in _handled_mismatch_ids:
+                continue
             fields.append({
                 "name": f"🟣 [{account}] {m['symbol']} lot-size mismatch (partial-close desync, not auto-corrected)",
                 "value": f"paper shows {m['paper_lots']} lots, real ticket {m['real_ticket']} shows {m['real_volume']} lots -- one side's partial-close likely didn't relay",

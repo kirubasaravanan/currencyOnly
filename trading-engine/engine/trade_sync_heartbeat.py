@@ -152,6 +152,24 @@ class _AccountState:
     # skipped, unchanged from before this field existed.
     is_relay_confirmed_fn: Optional[Callable[[int], bool]] = None
 
+    # [ADD 2026-09-09, explicit user instruction, found live: paper closed
+    # EURUSD/GBPUSD, demo-unrestricted's close silently succeeded (confirmed
+    # via MT5's own deal REASON=EXPERT), fundednext-25k's silently never
+    # even landed -- zero log trace either way until the fixes above. Per-
+    # account override of the module-level HEARTBEAT_AUTO_ACTIONS_ENABLED
+    # (see run_heartbeat_for()) -- that global flag stays False (paused
+    # since the 2026-08-25 GBPCAD incident on TradeSgnl/PineConnector,
+    # untouched by this). Direct-MT5 accounts opt in individually via
+    # config.DirectMT5Account.sync_auto_close_enabled instead, so a new
+    # account defaults to detection-only until explicitly trusted.
+    auto_actions_enabled: bool = False
+    # Bound only for Direct-MT5 accounts (functools.partial(direct_mt5_
+    # relay.send_partial_close, acct) below) -- None for TradeSgnl/
+    # FundedNext, whose lot-mismatch handling stays report-only regardless
+    # of auto_actions_enabled (see run_heartbeat_for()'s own note on why
+    # partial-close auto-correction is Direct-MT5-only for now).
+    send_partial_close: Optional[Callable[..., "Awaitable[bool]"]] = None
+
     def to_true_utc(self, server_ts: float) -> datetime:
         return datetime.fromtimestamp(server_ts, tz=timezone.utc) - self.server_utc_offset
 
@@ -241,6 +259,8 @@ DIRECT_ACCOUNT_STATES: List[_AccountState] = [
         send_close=functools.partial(direct_mt5_relay.send_close, acct),
         own_tag_prefix=acct.comment_prefix,
         server_utc_offset=timedelta(hours=acct.server_utc_offset_hours),
+        auto_actions_enabled=acct.sync_auto_close_enabled,
+        send_partial_close=functools.partial(direct_mt5_relay.send_partial_close, acct),
     )
     for acct in config.DIRECT_MT5_ACCOUNTS if acct.enabled
 ]
@@ -371,6 +391,7 @@ def _detect_sync(acct: _AccountState) -> Dict:
                 if abs(real_pos.volume - t.get("lots", 0.0)) > LOT_MISMATCH_TOLERANCE:
                     result["lot_mismatches"].append({
                         "trade_id": t["id"], "symbol": symbol, "side": side,
+                        "paper_trade": t,  # [ADD 2026-09-09] needed for send_partial_close() below
                         "paper_lots": t.get("lots"), "real_volume": real_pos.volume,
                         "real_ticket": real_pos.ticket,
                     })
@@ -498,12 +519,24 @@ async def run_heartbeat_for(acct: _AccountState, prices: Optional[Dict[str, floa
     result["direction1_closed_paper"] = []
     result["direction2_closed_real"] = []
     result["direction2_close_unverified"] = []
-    result["actions_paused"] = not HEARTBEAT_AUTO_ACTIONS_ENABLED
+    result["partial_corrected"] = []
+    result["partial_correction_failed"] = []
+    # [CHANGED 2026-09-09, explicit user instruction, found live -- see
+    # config.DirectMT5Account.sync_auto_close_enabled's own note] Per-
+    # account opt-in on top of the module-level switch, not instead of it
+    # -- either one being True is enough to act for THIS account.
+    # HEARTBEAT_AUTO_ACTIONS_ENABLED alone still governs TradeSgnl/
+    # FundedNext exactly as before (acct.auto_actions_enabled defaults
+    # False for both, so nothing changes there); Direct-MT5 accounts can
+    # now be trusted individually.
+    actions_enabled = HEARTBEAT_AUTO_ACTIONS_ENABLED or acct.auto_actions_enabled
+    result["actions_paused"] = not actions_enabled
 
-    if not HEARTBEAT_AUTO_ACTIONS_ENABLED:
-        # Detection/alerting above still ran in full -- confirmed_phantoms
-        # and still_open_on_real are populated for visibility. Only the
-        # actual close actions are held back while this is False.
+    if not actions_enabled:
+        # Detection/alerting above still ran in full -- confirmed_phantoms,
+        # still_open_on_real, and lot_mismatches are populated for
+        # visibility. Only the actual corrective actions are held back
+        # while this is False.
         return result
 
     for phantom in result["confirmed_phantoms"]:
@@ -525,6 +558,27 @@ async def run_heartbeat_for(acct: _AccountState, prices: Optional[Dict[str, floa
             result["direction2_closed_real"].append(still_open)
         else:
             result["direction2_close_unverified"].append(still_open)
+
+    # [ADD 2026-09-09, explicit user instruction: "remember how this will
+    # work on reduced lot size partial close also it should not close
+    # fully in demo and funded if paper is partially closed"] lot_
+    # mismatches were detection-only for every account until now (see the
+    # module docstring's 2026-08-21 note on why -- sourcing the correct
+    # PRICE for a same-day rush wasn't safe). The volume side doesn't have
+    # that problem: send_partial_close() computes the reduction from
+    # paper's own original_lots-vs-lots (both already-confirmed numbers,
+    # not a guess), and fetches a fresh live price only for the order
+    # itself -- so correcting late is exactly as safe as correcting
+    # immediately would have been. acct.send_partial_close is only bound
+    # for Direct-MT5 accounts (None for TradeSgnl/FundedNext), so this is
+    # a no-op there regardless of actions_enabled.
+    if acct.send_partial_close is not None:
+        for mismatch in result["lot_mismatches"]:
+            sent = await acct.send_partial_close(mismatch["paper_trade"], source="sync_heartbeat_lot_mismatch")
+            if not sent:
+                result["partial_correction_failed"].append(mismatch)
+                continue
+            result["partial_corrected"].append(mismatch)
 
     return result
 
