@@ -616,14 +616,24 @@ async def send_close(account: DirectMT5Account, trade: Dict, source: str = "unkn
     return await asyncio.to_thread(_send_close_sync, account, trade, source)
 
 
-def _verify_closed_sync(account: DirectMT5Account, symbol: str) -> Optional[bool]:
+def _verify_symbol_gone_sync(account: DirectMT5Account, symbol: str) -> Optional[bool]:
     """[ADD 2026-09-09, explicit user instruction -- extending !stopday/
     !closeall/!close SYMBOL to cover Direct-MT5, see orchestrator.py's own
     close_all_real_positions()] True if genuinely gone, False if a
     position for this symbol (our own magic number) is still open, None
     if unverifiable this cycle -- same "unconfirmed must never read as
     safe" convention as trade_sync_heartbeat.py's _verify_ticket_closed_
-    sync. Caller is expected to have already waited a verify delay."""
+    sync. Caller is expected to have already waited a verify delay.
+
+    [RENAMED 2026-09-09, found live] Was _verify_closed_sync, colliding
+    with the OLDER, differently-signatured _verify_closed_sync(account,
+    symbol, ticket, source) above (send_close's own verify step) --
+    Python silently let this later definition overwrite that one in the
+    module namespace, so every send_close() call since this was added
+    crashed with TypeError right after its real order_send() already
+    succeeded (confirmed live: demo-unrestricted's EURUSD/GBPUSD closed
+    correctly, then fundednext-25k's never even got attempted in the same
+    loop -- the exception killed the rest of that iteration)."""
     if not _terminal_running(account.terminal_path):
         return None
     try:
@@ -645,7 +655,7 @@ def _verify_closed_sync(account: DirectMT5Account, symbol: str) -> Optional[bool
 
 
 async def verify_closed(account: DirectMT5Account, symbol: str) -> Optional[bool]:
-    return await asyncio.to_thread(_verify_closed_sync, account, symbol)
+    return await asyncio.to_thread(_verify_symbol_gone_sync, account, symbol)
 
 
 async def send_partial_close(account: DirectMT5Account, trade: Dict, source: str = "unknown") -> bool:
