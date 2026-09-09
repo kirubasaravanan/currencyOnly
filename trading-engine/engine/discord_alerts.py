@@ -369,21 +369,47 @@ async def alert_session_summary(session_name: str, trades: List[Dict], scope_lab
 
 
 async def alert_eod_summary(date_str: str, trades: List[Dict], equity: float, drawdown_pct: float,
-                             scope_label: str = "ALL 17 PAIRS") -> None:
+                             scope_label: str = "ALL 17 PAIRS", real_accounts: Optional[List[Dict]] = None) -> None:
+    """[ADD 2026-09-09, explicit user instruction] real_accounts, when
+    given, adds one field per enabled Direct-MT5 account showing today's
+    REAL realized+floating P&L alongside paper's -- this summary was
+    paper-only until now, with zero visibility into how the accounts that
+    actually carry real risk (or challenge-progress risk) are tracking.
+    Each entry: {"label": str, "totals": dict-or-None} where totals is
+    direct_account_protection.get_account_totals()'s own return shape
+    (or None if unreachable this cycle -- shown as such, never assumed
+    zero, same fail-open convention as everywhere else that reads real
+    account data)."""
     agg = _aggregate(trades)
     lines = "\n".join(f"{t['symbol']}: ${t.get('pnl', 0):.2f} ({t.get('reason', '')})" for t in trades)
+    fields = [
+        {"name": "Trades", "value": f"{len(trades)} ({agg['wins']}W/{agg['losses']}L)", "inline": True},
+        {"name": "Gross", "value": f"${agg['gross']:.2f}", "inline": True},
+        {"name": "Commission", "value": f"${agg['commission']:.2f}", "inline": True},
+        {"name": "Net", "value": f"${agg['net']:.2f}", "inline": True},
+        {"name": "Equity", "value": f"${equity:.2f}", "inline": True},
+        {"name": "Drawdown", "value": f"{drawdown_pct:.2f}%", "inline": True},
+    ]
+    for ra in (real_accounts or []):
+        totals = ra.get("totals")
+        if totals is None:
+            fields.append({
+                "name": f"Real — {ra['label']}",
+                "value": "Unreachable this cycle — not shown, not assumed zero",
+                "inline": False,
+            })
+        else:
+            combined = totals["realized"] + totals["floating"]
+            fields.append({
+                "name": f"Real — {ra['label']}",
+                "value": f"Realized ${totals['realized']:+.2f}, floating ${totals['floating']:+.2f} (combined ${combined:+.2f})",
+                "inline": False,
+            })
     embed = {
         "title": f"🌙 END OF DAY SUMMARY — {date_str} — {scope_label}",
         "color": AMBER,
         "description": lines[:4000],
-        "fields": [
-            {"name": "Trades", "value": f"{len(trades)} ({agg['wins']}W/{agg['losses']}L)", "inline": True},
-            {"name": "Gross", "value": f"${agg['gross']:.2f}", "inline": True},
-            {"name": "Commission", "value": f"${agg['commission']:.2f}", "inline": True},
-            {"name": "Net", "value": f"${agg['net']:.2f}", "inline": True},
-            {"name": "Equity", "value": f"${equity:.2f}", "inline": True},
-            {"name": "Drawdown", "value": f"{drawdown_pct:.2f}%", "inline": True},
-        ],
+        "fields": fields,
     }
     await _send_embed(embed)
 

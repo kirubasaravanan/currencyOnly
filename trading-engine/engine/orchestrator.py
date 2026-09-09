@@ -633,11 +633,15 @@ async def _check_session_rollover(now: datetime) -> None:
         return
     if session_name != _current_session_name:
         # Two separate messages per explicit user request: majors-only
-        # performance visible independently from the full 17-pair set,
-        # to inform which (if any) crosses get added on top of a
-        # majors-only core.
+        # performance visible independently from the full pair set, to
+        # inform which (if any) crosses get added on top of a majors-only
+        # core. [FIX 2026-09-09] scope_label now derived from len(PAIRS)
+        # instead of a hardcoded "17" -- PAIRS has grown to 21 since that
+        # label was written, and every summary since has been mislabeling
+        # its own scope.
+        all_pairs_label = f"ALL {len(config.PAIRS)} PAIRS"
         await discord_alerts.alert_session_summary(_current_session_name, _majors_subset(_session_trades), "MAJORS")
-        await discord_alerts.alert_session_summary(_current_session_name, _session_trades, "ALL 17 PAIRS")
+        await discord_alerts.alert_session_summary(_current_session_name, _session_trades, all_pairs_label)
         _current_session_name = session_name
         _session_trades = []
 
@@ -657,8 +661,27 @@ async def _check_eod_rollover(now: datetime) -> None:
 
     if _ist_minutes_of_day(now) >= EOD_TRIGGER_MINUTES and _last_eod_date != date_str:
         dd = _drawdown_pct()
+        all_pairs_label = f"ALL {len(config.PAIRS)} PAIRS"
+        # [ADD 2026-09-09, explicit user instruction] Real-account totals
+        # for every enabled Direct-MT5 account (currently demo-unrestricted
+        # and fundednext-25k, but this iterates config.DIRECT_MT5_ACCOUNTS
+        # rather than naming them, so a future third/fourth account picked
+        # up automatically) -- the EOD summary was paper-only until now,
+        # with no visibility into how the accounts carrying real risk (or
+        # challenge-progress risk) actually tracked that day. Scoped to
+        # the ALL-PAIRS message only, not MAJORS or the session summaries
+        # -- explicit user choice, real accounts aren't symbol-scoped to
+        # majors in any meaningful way.
+        real_accounts = []
+        for acct in config.DIRECT_MT5_ACCOUNTS:
+            if not acct.enabled:
+                continue
+            totals = await direct_account_protection.get_account_totals(acct)
+            real_accounts.append({"label": acct.label, "totals": totals})
         await discord_alerts.alert_eod_summary(date_str, _majors_subset(_day_trades), broker.equity, dd, "MAJORS")
-        await discord_alerts.alert_eod_summary(date_str, _day_trades, broker.equity, dd, "ALL 17 PAIRS")
+        await discord_alerts.alert_eod_summary(
+            date_str, _day_trades, broker.equity, dd, all_pairs_label, real_accounts=real_accounts
+        )
         _last_eod_date = date_str
 
 
