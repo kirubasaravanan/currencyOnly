@@ -361,26 +361,38 @@ DIRECT_MT5_ACCOUNTS: List[DirectMT5Account] = [
     # ever turned back on for this account on old VPS while this stays
     # enabled, both paths would send independent real orders to the same
     # live account again.
-    # [ADD 2026-09-09, explicit user instruction: "lets exclude this and
-    # keep the same window and run only in demo"] EURNZD excluded from
-    # this real account specifically, after checking every hour-based
-    # narrowing (full window, 3-KZ, Asian+London-only) and finding none
-    # of them isolate a profitable slice -- the pair's problem is its
-    # stop-loss exits (0% win rate across every one sampled), not which
-    # hours it trades in, so narrowing the window wouldn't have fixed
-    # anything here anyway. session_windows_ist itself is UNCHANGED (per
-    # explicit instruction) -- this only stops new EURNZD entries from
-    # reaching the real account; demo-unrestricted has no symbol_scope
-    # set, so EURNZD keeps trading there unaffected, for continued
-    # observation. Same "exclude from real, keep on demo" pattern
-    # PINECONNECTOR_EXCLUDED_PAIRS already uses (EURNZD is in that set
-    # too).
+    # [CHANGED 2026-09-09, explicit user instruction: "lets keep only the
+    # below currencies included in the fundednxt and rest we exclude"]
+    # Superseded the single-pair EURNZD deny-list (kept in history above
+    # for context) with a full 9-pair ALLOW-list -- only pairs whose
+    # profit factor stayed > 1.2 in at least one of three outlier-check
+    # passes on the demo account's real 30-day history (raw / best-win-
+    # removed / best-win-and-worst-loss-removed) are included:
+    # AUDJPY, EURJPY, NZDJPY, AUDCAD, AUDUSD, EURAUD, USDCAD, GBPJPY,
+    # GBPAUD. The other 12 (including EURNZD) are excluded.
+    #
+    # [FLAGGED before implementing, explicit instruction to proceed
+    # anyway] PINECONNECTOR_EXCLUDED_PAIRS's own history above documents
+    # that an allow-list was already tried once on real PineConnector
+    # money and UNDERPERFORMED a deny-list over the same window (+$212 vs
+    # +$527) -- which is why that set stayed a deny-list despite having a
+    # "confirmed good" pairs list available. Same tradeoff applies here in
+    # principle; noted, not blocking, since this is easily reversible and
+    # the user reviewed the full data before choosing this.
+    #
+    # session_windows_ist/calibration for every pair is UNCHANGED --
+    # this only gates which symbols reach THIS real account.
+    # demo-unrestricted has no symbol_scope set, so all 21 pairs (EURNZD
+    # included) keep trading there unaffected, for continued observation.
     DirectMT5Account(
         label="fundednext-25k",
         terminal_path=r"C:\Program Files\Multi Mt5\MT5 -1\terminal64.exe",
         account_login=12034354,
         enabled=True,
-        symbol_scope=frozenset(p for p in PAIRS if p != "EURNZD"),
+        symbol_scope=frozenset({
+            "AUDJPY", "EURJPY", "NZDJPY", "AUDCAD", "AUDUSD",
+            "EURAUD", "USDCAD", "GBPJPY", "GBPAUD",
+        }),
         giveback_min_peak=100.0,
         giveback_pct=25.0,
         max_risk_pct=3.0,
