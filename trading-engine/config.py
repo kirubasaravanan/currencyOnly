@@ -361,12 +361,26 @@ DIRECT_MT5_ACCOUNTS: List[DirectMT5Account] = [
     # ever turned back on for this account on old VPS while this stays
     # enabled, both paths would send independent real orders to the same
     # live account again.
+    # [ADD 2026-09-09, explicit user instruction: "lets exclude this and
+    # keep the same window and run only in demo"] EURNZD excluded from
+    # this real account specifically, after checking every hour-based
+    # narrowing (full window, 3-KZ, Asian+London-only) and finding none
+    # of them isolate a profitable slice -- the pair's problem is its
+    # stop-loss exits (0% win rate across every one sampled), not which
+    # hours it trades in, so narrowing the window wouldn't have fixed
+    # anything here anyway. session_windows_ist itself is UNCHANGED (per
+    # explicit instruction) -- this only stops new EURNZD entries from
+    # reaching the real account; demo-unrestricted has no symbol_scope
+    # set, so EURNZD keeps trading there unaffected, for continued
+    # observation. Same "exclude from real, keep on demo" pattern
+    # PINECONNECTOR_EXCLUDED_PAIRS already uses (EURNZD is in that set
+    # too).
     DirectMT5Account(
         label="fundednext-25k",
         terminal_path=r"C:\Program Files\Multi Mt5\MT5 -1\terminal64.exe",
         account_login=12034354,
         enabled=True,
-        symbol_scope=None,
+        symbol_scope=frozenset(p for p in PAIRS if p != "EURNZD"),
         giveback_min_peak=100.0,
         giveback_pct=25.0,
         max_risk_pct=3.0,
