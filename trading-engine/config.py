@@ -169,6 +169,21 @@ PINECONNECTOR_OFFPEAK_PAIRS: FrozenSet[str] = frozenset({
     "GBPAUD", "USDJPY", "USDCAD", "GBPJPY",
 })
 
+# [ADD 2026-09-09, explicit user instruction: "let's turn off this peak
+# hour thing temporarily" -- wants pairs relaying to PineConnector in
+# their OWN session instead, same as entry.py/PAIR_CALIBRATION already
+# restrict paper's own entry timing to. This hour gate was always an
+# EXTRA, coarser restriction layered on top for the real account
+# specifically -- it never controlled when paper opens a pair, only
+# whether an already-paper-opened (so already within that pair's own
+# session) trade also relays to PineConnector. Flip back to True to
+# restore it -- PINECONNECTOR_ACTIVE_HOURS_IST/_OFFPEAK_PAIRS
+# themselves are untouched, still there, just bypassed while this is
+# False. PINECONNECTOR_EXCLUDED_PAIRS, the giveback breaker, manual
+# block, and the 3%-risk gate are NOT affected by this flag -- only the
+# hour narrowing.
+PINECONNECTOR_HOUR_GATING_ENABLED: bool = False
+
 MAJORS: List[str] = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "NZDUSD", "USDCHF", "USDCAD"]
 
 # Named symbol-scope presets — groundwork for eventually routing different

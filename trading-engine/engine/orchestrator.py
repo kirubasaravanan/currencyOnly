@@ -853,7 +853,11 @@ async def _scan_once() -> None:
                     _giveback_triggered_date != _current_ist_date
                     and _manual_block_date != _current_ist_date
                     and symbol not in config.PINECONNECTOR_EXCLUDED_PAIRS
-                    and (in_peak_hour or symbol in config.PINECONNECTOR_OFFPEAK_PAIRS)
+                    and (
+                        not config.PINECONNECTOR_HOUR_GATING_ENABLED
+                        or in_peak_hour
+                        or symbol in config.PINECONNECTOR_OFFPEAK_PAIRS
+                    )
                 ):
                     is_long = trade["side"] == "BULLISH"
                     risk_check = await real_risk_source.check_pineconnector_risk_ok(
