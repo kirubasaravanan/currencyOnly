@@ -20,18 +20,21 @@ Security: only reacts to a message from DISCORD_AUTHORIZED_USER_ID
 specifically -- anyone else typing a command in a shared server/channel
 is silently ignored (no reply, no hint the command exists).
 
-Three commands, three different scopes -- all PineConnector/FundedNext
-only:
-  !closeall     -- close every open PineConnector position right now.
-                  Does NOT stop new entries from resuming on the next
-                  qualifying signal (any symbol, including the ones just
-                  closed).
-  !stopday      -- close every open PineConnector position AND pause new
-                  PineConnector entries for the rest of today (see
+Three commands, three different scopes -- PineConnector/FundedNext AND
+every enabled Direct-MT5 account [EXTENDED 2026-09-09, explicit user
+instruction -- see orchestrator.close_all_real_positions()'s own note]:
+  !closeall     -- close every open position, PineConnector and every
+                  enabled Direct-MT5 account alike, right now. Does NOT
+                  stop new entries from resuming on the next qualifying
+                  signal (any symbol, including the ones just closed).
+  !stopday      -- close everything above AND pause new entries -- on
+                  PineConnector AND every enabled Direct-MT5 account --
+                  for the rest of today (see
                   orchestrator.manual_stop_for_today()'s own docstring
                   for why this is a separate flag from the give-back
                   breaker's).
-  !close SYMBOL -- close only that one symbol's PineConnector position,
+  !close SYMBOL -- close only that one symbol's position(s), across
+                  PineConnector and every enabled Direct-MT5 account,
                   e.g. "!close USDCHF". Nothing else is touched -- every
                   other open symbol keeps running exactly as before, and
                   this same symbol can open a fresh trade again on the
@@ -41,11 +44,12 @@ only:
 
 [NARROWED 2026-08-21, explicit user instruction] None of these three ever
 touch TradeSgnl -- it runs on a demo account purely as a continuous data
-feed, so there's no real money for any of these to protect there. Only
-PineConnector, the account actually carrying real risk, is ever affected.
-Paper is untouched by all three either way -- it stays a clean,
-continuous research baseline regardless of what happens on the real
-side, same reasoning as the give-back breaker.
+feed, so there's no real money for any of these to protect there. Every
+account that actually carries real risk (or challenge-progress risk) is
+covered; TradeSgnl specifically never is. Paper is untouched by all three
+either way -- it stays a clean, continuous research baseline regardless
+of what happens on the real side, same reasoning as the give-back
+breaker.
 
 [ADD 2026-09-08, explicit user instruction -- FundedNext 25k recovery
 plan] A fourth command, Direct-MT5 side (config.DIRECT_MT5_ACCOUNTS),
@@ -149,7 +153,7 @@ def start() -> None:
         try:
             if content == STOP_DAY_COMMAND:
                 result = await orchestrator.manual_stop_for_today()
-                suffix = " New PineConnector entries are paused for the rest of today (TradeSgnl unaffected)."
+                suffix = " New entries paused for the rest of today on PineConnector and every enabled Direct-MT5 account (TradeSgnl unaffected)."
             else:
                 result = await orchestrator.close_all_real_positions(symbol=symbol)
                 suffix = "" if symbol is None else " Everything else is untouched -- resumes normally."
@@ -162,9 +166,9 @@ def start() -> None:
         orphans = {name: syms for name, syms in still_open.items() if syms}
 
         if closed:
-            base = f"Sent close for {len(closed)} position(s) on PineConnector: {', '.join(closed)}."
+            base = f"Sent close for {len(closed)} position(s): {', '.join(closed)}."
         else:
-            base = "No open PineConnector positions to close."
+            base = "No open real positions to close (PineConnector or Direct-MT5)."
 
         if orphans:
             orphan_lines = "; ".join(f"{name}: {', '.join(syms)}" for name, syms in orphans.items())

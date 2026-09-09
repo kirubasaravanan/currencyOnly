@@ -313,16 +313,28 @@ def _positions_still_open_sync(symbols: List[str]) -> Dict[str, List[str]]:
 
 
 async def close_all_real_positions(symbol: Optional[str] = None) -> Dict:
-    """Closes open position(s) on PineConnector (FundedNext) ONLY, then
-    verifies against the actual account rather than trusting the relay
-    response alone (see comment above). TradeSgnl is never touched --
-    it's a demo-account data feed, gated only by real_relay_enabled, not
-    by anything in this function. Paper is untouched too -- it stays a
-    clean, continuous baseline, same as the give-back breaker. Shared by
-    discord_bot_listener.py's "!closeall"/"!close SYMBOL", the /close-all,
-    /close-symbol/{symbol}, and /stop-day HTTP routes, and
-    manual_stop_for_today() below, so there's exactly one close code
-    path, not several.
+    """Closes open position(s) on PineConnector (FundedNext) AND every
+    enabled Direct-MT5 account, then verifies against the actual accounts
+    rather than trusting a relay response alone (see comment above).
+    TradeSgnl is never touched -- it's a demo-account data feed, gated
+    only by real_relay_enabled, not by anything in this function. Paper is
+    untouched too -- it stays a clean, continuous baseline, same as the
+    give-back breaker. Shared by discord_bot_listener.py's "!closeall"/
+    "!close SYMBOL", the /close-all, /close-symbol/{symbol}, and
+    /stop-day HTTP routes, and manual_stop_for_today() below, so there's
+    exactly one close code path, not several.
+
+    [ADD 2026-09-09, explicit user instruction: "previous discord stopday
+    close and all will go thru pine connector... will that same works in
+    direct MT5 also now or do we need to make any changes"] Direct-MT5
+    accounts were a deliberate, documented gap here until now (see the
+    2026-08-26 note this replaces) -- real money (well, a funded-challenge
+    account) only started flowing through one today. symbol=None reuses
+    direct_mt5_relay.close_all_positions() (built 2026-09-08 for the
+    per-account give-back breaker, already verifies internally by re-
+    reading positions_get() after sending); symbol=SYMBOL uses the
+    per-trade send_close() + this module's own verify_closed(), matching
+    the granularity of the PineConnector path below exactly.
 
     symbol: if given, closes only that one symbol's open position(s) and
     touches nothing else -- the system keeps running exactly as before
@@ -331,16 +343,11 @@ async def close_all_real_positions(symbol: Optional[str] = None) -> Dict:
     here, unlike manual_stop_for_today()). If None (the default), closes
     everything, matching the prior behavior exactly.
 
-    Returns {"closed_symbols": [...], "still_open": {"FundedNext": [...]}}
-    -- a non-empty "still_open" list means a genuine orphan (or, prefixed
-    "UNVERIFIABLE", that the check itself couldn't run) and needs a human
-    to look, not an assumption that closing succeeded.
-
-    [NOTE 2026-08-26] Direct-MT5 accounts (config.DIRECT_MT5_ACCOUNTS)
-    are NOT covered by this function -- a deliberate, known gap, not an
-    oversight. Extending give-back/manual-stop/3%-risk protection to a
-    configured direct account is deferred, explicit follow-up work that
-    must happen before any real money goes into one."""
+    Returns {"closed_symbols": [...], "still_open": {"FundedNext": [...],
+    <direct account label>: [...]}} -- a non-empty "still_open" list
+    means a genuine orphan (or, prefixed "UNVERIFIABLE", that the check
+    itself couldn't run) and needs a human to look, not an assumption
+    that closing succeeded."""
     targets = [t for t in broker.open_positions if symbol is None or t["symbol"] == symbol]
     closed_symbols: List[str] = []
     for t in list(targets):
@@ -348,18 +355,49 @@ async def close_all_real_positions(symbol: Optional[str] = None) -> Dict:
         if sent_pineconnector:
             closed_symbols.append(t["symbol"])
 
+    still_open: Dict[str, List[str]] = {}
+    for acct in config.DIRECT_MT5_ACCOUNTS:
+        if not acct.enabled:
+            continue
+        if symbol is None:
+            result = await direct_mt5_relay.close_all_positions(acct, source="close_all_real_positions")
+            for s in result["closed"]:
+                if s not in closed_symbols:
+                    closed_symbols.append(s)
+            problems = result["still_open"] + [f"UNVERIFIABLE ({s})" for s in result["failed"]]
+            if problems:
+                still_open[acct.label] = problems
+        else:
+            for t in targets:
+                sent = await direct_mt5_relay.send_close(acct, t, source="close_all_real_positions")
+                if not sent:
+                    continue
+                if symbol not in closed_symbols:
+                    closed_symbols.append(symbol)
+                await asyncio.sleep(CLOSE_VERIFY_DELAY_SECONDS)
+                gone = await direct_mt5_relay.verify_closed(acct, symbol)
+                if gone is False:
+                    still_open.setdefault(acct.label, []).append(symbol)
+                elif gone is None:
+                    still_open.setdefault(acct.label, []).append(f"UNVERIFIABLE ({symbol})")
+
     if not closed_symbols:
-        return {"closed_symbols": [], "still_open": {"FundedNext": []}}
+        return {"closed_symbols": [], "still_open": {"FundedNext": [], **still_open}}
 
     await asyncio.sleep(CLOSE_VERIFY_DELAY_SECONDS)
-    still_open = await asyncio.to_thread(_positions_still_open_sync, closed_symbols)
+    pineconnector_still_open = await asyncio.to_thread(_positions_still_open_sync, closed_symbols)
+    still_open.update(pineconnector_still_open)
     return {"closed_symbols": closed_symbols, "still_open": still_open}
 
 
 async def manual_stop_for_today() -> Dict:
     """The user's manual "close everything and pause for today" command --
-    PineConnector (FundedNext) only. TradeSgnl is never affected, see
-    module comment above."""
+    PineConnector (FundedNext) AND every enabled Direct-MT5 account now
+    [ADD 2026-09-09, explicit user instruction -- see close_all_real_
+    positions()'s own note]. TradeSgnl is never affected, see module
+    comment above. The "pause" half is enforced at the Direct-MT5 entry
+    gate below (_manual_block_date check, mirroring PineConnector's own),
+    not here -- this function only sets the flag both gates read."""
     global _manual_block_date
     result = await close_all_real_positions()
     _manual_block_date = _current_ist_date
@@ -896,6 +934,12 @@ async def _scan_once() -> None:
                 # unaffected -- same as before this addition.
                 for acct in _direct_accounts_for_symbol(symbol):
                     if direct_account_protection.is_giveback_triggered_today(acct, _current_ist_date):
+                        continue
+                    # [ADD 2026-09-09, explicit user instruction] !stopday's
+                    # pause now covers Direct-MT5 too, not just
+                    # PineConnector -- see manual_stop_for_today()'s own
+                    # note. Same flag PineConnector's own check above reads.
+                    if _manual_block_date == _current_ist_date:
                         continue
                     # 5 AM IST boundary, not _current_ist_date -- see
                     # _check_direct_accounts_profit_lock()'s own note.

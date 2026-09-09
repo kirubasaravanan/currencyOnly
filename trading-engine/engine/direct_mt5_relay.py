@@ -587,6 +587,38 @@ async def send_close(account: DirectMT5Account, trade: Dict, source: str = "unkn
     return await asyncio.to_thread(_send_close_sync, account, trade, source)
 
 
+def _verify_closed_sync(account: DirectMT5Account, symbol: str) -> Optional[bool]:
+    """[ADD 2026-09-09, explicit user instruction -- extending !stopday/
+    !closeall/!close SYMBOL to cover Direct-MT5, see orchestrator.py's own
+    close_all_real_positions()] True if genuinely gone, False if a
+    position for this symbol (our own magic number) is still open, None
+    if unverifiable this cycle -- same "unconfirmed must never read as
+    safe" convention as trade_sync_heartbeat.py's _verify_ticket_closed_
+    sync. Caller is expected to have already waited a verify delay."""
+    if not _terminal_running(account.terminal_path):
+        return None
+    try:
+        import MetaTrader5 as mt5
+    except ImportError:
+        return None
+    with MT5_LOCK:
+        if not _connect(mt5, account):
+            mt5.shutdown()
+            return None
+        try:
+            positions = mt5.positions_get(symbol=symbol) or ()
+            still_there = any(p.magic == _magic(account) for p in positions)
+            return not still_there
+        except Exception:  # noqa: BLE001
+            return None
+        finally:
+            mt5.shutdown()
+
+
+async def verify_closed(account: DirectMT5Account, symbol: str) -> Optional[bool]:
+    return await asyncio.to_thread(_verify_closed_sync, account, symbol)
+
+
 async def send_partial_close(account: DirectMT5Account, trade: Dict, source: str = "unknown") -> bool:
     return await asyncio.to_thread(_send_partial_close_sync, account, trade, source)
 
