@@ -78,7 +78,7 @@ from engine.paper_broker import broker
 from engine.real_giveback_source import FUNDEDNEXT_MT5_TERMINAL_PATH, FUNDEDNEXT_MT5_LOGIN
 from engine.tradesgnl_relay import _comment_id as _tradesgnl_comment_id, send_close as _tradesgnl_send_close, TRADESGNL_LICENSE_ID
 from engine.pineconnector_relay import _comment_id as _pineconnector_comment_id, send_close as _pineconnector_send_close
-from engine import direct_mt5_relay
+from engine import direct_mt5_relay, pineconnector_relay, tradesgnl_relay
 
 # This demo account's server clock runs 3h ahead of true UTC (empirically
 # confirmed 2026-08-17 for TradeSgnl, and independently re-confirmed
@@ -144,6 +144,14 @@ class _AccountState:
     uncertain_streak: Dict[int, int] = field(default_factory=dict)
     direction2_last_alerted: Dict[int, float] = field(default_factory=dict)
 
+    # [ADD 2026-09-09, found live: false "desync" alerts for trades that
+    # were never relay-attempted in the first place -- see the 2026-09-09
+    # comment at this field's one call site below] None for accounts with
+    # no confirmed-sent set to check (Direct-MT5 -- see that module's own
+    # note on why it doesn't keep one), in which case the check is simply
+    # skipped, unchanged from before this field existed.
+    is_relay_confirmed_fn: Optional[Callable[[int], bool]] = None
+
     def to_true_utc(self, server_ts: float) -> datetime:
         return datetime.fromtimestamp(server_ts, tz=timezone.utc) - self.server_utc_offset
 
@@ -201,6 +209,7 @@ TRADESGNL_ACCOUNT = _AccountState(
     comment_id_fn=_tradesgnl_comment_id,
     send_close=_tradesgnl_send_close,
     own_tag_prefix=None,
+    is_relay_confirmed_fn=lambda trade_id: trade_id in tradesgnl_relay._confirmed_open_ids,
 )
 
 FUNDEDNEXT_ACCOUNT = _AccountState(
@@ -210,6 +219,7 @@ FUNDEDNEXT_ACCOUNT = _AccountState(
     comment_id_fn=_pineconnector_comment_id,
     send_close=_pineconnector_send_close,
     own_tag_prefix="pineconnector-",
+    is_relay_confirmed_fn=lambda trade_id: trade_id in pineconnector_relay._confirmed_open_ids,
 )
 
 # [ADD 2026-08-26, explicit user instruction -- direct-MT5 execution
@@ -337,6 +347,22 @@ def _detect_sync(acct: _AccountState) -> Dict:
         # positions genuinely open on both sides ---
         still_uncertain_ids = set()
         for t in list(broker.open_positions):
+            # [FIX 2026-09-09, found live: repeated false "desync" alerts for
+            # USDCAD/AUDUSD ~15min after each opened] A paper trade that was
+            # never actually relay-attempted for THIS account (real_relay_
+            # enabled was off, or -- FundedNext specifically -- the pair was
+            # in PINECONNECTOR_EXCLUDED_PAIRS or outside its active hours)
+            # can never have a real counterpart. The loop below has no way
+            # to tell "never sent" apart from "sent, now genuinely missing" --
+            # both look identical to a fresh positions_get() read -- so it
+            # was accumulating an uncertain_streak and alerting on trades
+            # that were 100% expected to have no real side. is_relay_
+            # confirmed_fn (set only for TradeSgnl/FundedNext, which
+            # actually track a confirmed-sent set; None for Direct-MT5
+            # accounts, unchanged) answers the question directly instead of
+            # inferring it from absence.
+            if acct.is_relay_confirmed_fn is not None and not acct.is_relay_confirmed_fn(t["id"]):
+                continue
             symbol = t.get("symbol")
             side = t.get("side", "")
             tag = acct.comment_id_fn(symbol, side)  # still used for _find_closing_deal()'s history search below
