@@ -157,10 +157,26 @@ def _send_entry_sync(account: DirectMT5Account, trade: Dict) -> Optional[Dict]:
         try:
             symbol = trade["symbol"]
             is_long = trade["side"] in ("BUY", "BULLISH")
+            # [FIX 2026-09-09, found live: NZDCAD/CADJPY/NZDJPY and 11 other
+            # cross pairs silently never relayed to the demo account -- a
+            # Discord "entry" alert fired (that's paper, unconditional) but
+            # no real fill ever happened, no error logged, nothing. Root
+            # cause: MT5 only streams tick data for symbols added to this
+            # terminal's Market Watch, and only the 7 major pairs were ever
+            # added -- symbol_info_tick() returned None for the other 14,
+            # hit the silent return below, and nobody could tell without
+            # cross-checking MT5 directly against paper's own trade log.
+            # symbol_select() self-heals a terminal that's missing a symbol
+            # (idempotent if it's already visible); if it STILL can't get a
+            # tick after that, it's a genuine problem worth surfacing, not
+            # silently swallowing.
+            mt5.symbol_select(symbol, True)
             info = mt5.symbol_info(symbol)
             tick = mt5.symbol_info_tick(symbol)
             if info is None or tick is None:
-                return None
+                print(f"[direct_mt5_relay:{account.label}] SKIPPED entry for {symbol} -- "
+                      f"no symbol_info/tick even after symbol_select (info={info is not None}, tick={tick is not None})")
+                return {"status": "no_tick", "symbol": symbol, "side": trade["side"], "lots": trade.get("lots")}
             price = tick.ask if is_long else tick.bid
             tp_to_send = trade["tp_price"] if config.state.exit_mode == "static" else _wide_tp_price(trade)
 
@@ -546,7 +562,25 @@ async def close_all_positions(account: DirectMT5Account, source: str = "unknown"
 
 
 async def send_entry(account: DirectMT5Account, trade: Dict) -> Optional[Dict]:
-    return await asyncio.to_thread(_send_entry_sync, account, trade)
+    result = await asyncio.to_thread(_send_entry_sync, account, trade)
+    # [FIX 2026-09-09, found live] Every failure mode below already printed
+    # to the log (see _send_entry_sync); none of them ever reached Discord
+    # -- unlike pineconnector_relay.py/tradesgnl_relay.py, which alert on
+    # every send failure. The tick-visibility one specifically caused a
+    # paper "entry" alert with silently no real fill behind it for 14 of 21
+    # pairs, unnoticed until a manual cross-check found it.
+    if result is not None and result.get("status") in ("no_tick", "rejected"):
+        try:
+            from engine import discord_alerts
+            symbol = result.get("symbol", trade.get("symbol"))
+            if result["status"] == "no_tick":
+                detail = f"{result.get('side')} {symbol} {result.get('lots')} lots -- no symbol_info/tick even after symbol_select"
+            else:
+                detail = f"{result.get('side', trade.get('side'))} {symbol} -- retcode {result.get('retcode')}: {result.get('comment')}"
+            await discord_alerts.alert_relay_failure(symbol, "entry", detail, relay=f"direct_mt5:{account.label}")
+        except Exception:  # noqa: BLE001
+            pass
+    return result
 
 
 async def send_close(account: DirectMT5Account, trade: Dict, source: str = "unknown") -> bool:
