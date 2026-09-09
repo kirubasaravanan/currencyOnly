@@ -326,11 +326,20 @@ DIRECT_MT5_ACCOUNTS: List[DirectMT5Account] = [
     # turned back on for this account while this direct connection is
     # ALSO enabled, both paths would send independent real orders to the
     # same live account. Only one should ever be active at a time.
+    # [ENABLED 2026-09-09, explicit user instruction: "let us OFF in old
+    # VPS pine connector and on the fundednext in new VPS"] Safe now
+    # specifically BECAUSE old VPS's real_relay_enabled is confirmed off
+    # (storage/real_relay_state.json: {"enabled": false}) -- the "only one
+    # should ever be active at a time" warning above is why that was
+    # checked first, not assumed. If PineConnector's real_relay_enabled is
+    # ever turned back on for this account on old VPS while this stays
+    # enabled, both paths would send independent real orders to the same
+    # live account again.
     DirectMT5Account(
         label="fundednext-25k",
         terminal_path=r"C:\Program Files\Multi Mt5\MT5 -1\terminal64.exe",
         account_login=12034354,
-        enabled=False,
+        enabled=True,
         symbol_scope=None,
         giveback_min_peak=100.0,
         giveback_pct=25.0,
