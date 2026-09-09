@@ -726,8 +726,16 @@ PAIR_CALIBRATION: Dict[str, PairCalibration] = {
     # 22:00 IST" reasoning as EURJPY/NZDJPY/CADJPY above, layered on top of
     # the 2026-08-21 exclusion-based fix (00:00/07:00/15:00 removed) rather
     # than replacing it.
+    # [CHANGED 2026-09-09, explicit user instruction: "make that as 5AM
+    # itself"] First window's start moved from 01:00 to 05:00 IST -- this
+    # was the one pair in the whole universe opening before 5AM (every
+    # other pair's earliest window starts at 05:00 or later), and the
+    # user wants nothing opening earlier than that anywhere. EURNZD is
+    # already fully excluded from fundednext-25k's symbol_scope, so this
+    # only affects demo-unrestricted (and paper) -- the 01:00-05:00 slice
+    # is dropped entirely, not shifted elsewhere.
     "EURNZD": PairCalibration(
-        session_windows_ist=_ist("0100-0700,0800-1500,1600-2200"), max_sl_pips=45, min_sl_pips=8,
+        session_windows_ist=_ist("0500-0700,0800-1500,1600-2200"), max_sl_pips=45, min_sl_pips=8,
         min_base=0.0005, use_trend_filter=True, activation_usd=30.0,
     ),
 }
