@@ -890,7 +890,7 @@ async def _scan_once() -> None:
             continue
         trade = broker.open_trade(signal, sizing["lots"])
         if trade is not None:
-            await discord_alerts.alert_trade_opened(trade)
+            await discord_alerts.alert_trade_opened(trade, prices)
             # Paper always opens regardless of any gate below (per
             # explicit user instruction, it stays a clean, continuous
             # baseline) -- only the real relay sends are ever suppressed.

@@ -18,6 +18,8 @@ import requests
 from dotenv import load_dotenv
 
 import config
+from config import CONTRACT_SIZE_USD, COMMISSION_PER_LOT_PER_SIDE_USD, PAIR_CALIBRATION
+from engine.fx_conversion import usd_conversion_rate
 
 load_dotenv()
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
@@ -104,20 +106,65 @@ def _fmt_ist(iso_ts: Optional[str]) -> str:
         return str(iso_ts)
 
 
-async def alert_trade_opened(trade: Dict) -> None:
+def _gross_dollars(symbol: str, side: str, entry_price: float, exit_price: float, lots: float,
+                    prices_for_conv: Optional[Dict[str, float]]) -> Optional[float]:
+    """Simple full-lot gross $ estimate if price reached `exit_price` --
+    ignores this app's 50%-at-TP1 partial-close/trailing mechanics (those
+    depend on config.state.exit_mode and shift mid-trade, so baking them
+    in here would make this alert wrong the moment that toggle changes);
+    this is a reference point at entry time, not a promise of the exact
+    exit P&L. Returns None if the FX cross-rate needed for conversion
+    isn't available (cross pairs need the full live `prices` dict, not
+    just this symbol's own price -- same reason paper_broker.mark_to_market
+    is always called with the full dict, never a single-symbol one)."""
+    direction = 1 if side == "BULLISH" else -1
+    contract = CONTRACT_SIZE_USD.get(symbol)
+    if contract is None:
+        return None
+    conv_prices = dict(prices_for_conv or {})
+    conv_prices[symbol] = exit_price
+    conv = usd_conversion_rate(symbol, conv_prices)
+    if conv is None:
+        return None
+    return direction * (exit_price - entry_price) * contract * lots * conv
+
+
+def _activation_dollars(trade: Dict, prices: Optional[Dict[str, float]]) -> Optional[float]:
+    """$ floating profit at which this pair's profit-trailing stop first
+    starts locking in gains (calib.activation_pct of the way to TP1) --
+    mirrors paper_broker._update_trailing_stop's own activation_threshold,
+    so this stays in sync if that per-pair % is ever re-tuned."""
+    symbol = trade.get("symbol")
+    calib = PAIR_CALIBRATION.get(symbol)
+    tp1_dist = trade.get("tp1_dist")
+    entry_price = trade.get("entry_price")
+    if calib is None or not tp1_dist or entry_price is None:
+        return None
+    direction = 1 if trade.get("side") == "BULLISH" else -1
+    activation_price = entry_price + direction * (calib.activation_pct / 100.0) * tp1_dist
+    return _gross_dollars(symbol, trade.get("side"), entry_price, activation_price, trade.get("lots", 0.0), prices)
+
+
+async def alert_trade_opened(trade: Dict, prices: Optional[Dict[str, float]] = None) -> None:
     is_long = trade.get("side") == "BULLISH"
+    entry_price, lots = trade.get("entry_price"), trade.get("lots", 0.0)
+    tp1_usd = _gross_dollars(trade["symbol"], trade.get("side"), entry_price, trade.get("tp_price"), lots, prices)
+    tp2_usd = _gross_dollars(trade["symbol"], trade.get("side"), entry_price, trade.get("tp2_price"), lots, prices)
+    activation_usd = _activation_dollars(trade, prices)
     embed = {
         "title": f"{'🟢' if is_long else '🔴'} {trade['symbol']} {trade.get('side')} — ENTRY",
         "color": GREEN if is_long else RED,
         "fields": [
-            {"name": "Entry", "value": _fmt_price(trade.get("entry_price")), "inline": True},
+            {"name": "Entry", "value": _fmt_price(entry_price), "inline": True},
             {"name": "SL", "value": _fmt_price(trade.get("sl_price")), "inline": True},
-            {"name": "TP1", "value": _fmt_price(trade.get("tp_price")), "inline": True},
-            {"name": "TP2", "value": _fmt_price(trade.get("tp2_price")), "inline": True},
-            {"name": "Lots", "value": str(trade.get("lots")), "inline": True},
+            {"name": "TP1", "value": _fmt_price(trade.get("tp_price")) + (f" (~${tp1_usd:+.2f})" if tp1_usd is not None else ""), "inline": True},
+            {"name": "TP2", "value": _fmt_price(trade.get("tp2_price")) + (f" (~${tp2_usd:+.2f})" if tp2_usd is not None else ""), "inline": True},
+            {"name": "Lots", "value": str(lots), "inline": True},
             {"name": "Confidence", "value": f"{trade.get('confidence', 0) * 100:.0f}%", "inline": True},
             {"name": "Session", "value": str(trade.get("session", "-")), "inline": True},
+            {"name": "Trail-lock activates at", "value": f"~${activation_usd:+.2f}" if activation_usd is not None else "-", "inline": True},
         ],
+        "description": "$ figures are full-lot estimates at entry -- this app's 50%-at-TP1 partial/trailing exits mean the actual realized P&L can differ.",
     }
     await _send_embed(embed)
 
