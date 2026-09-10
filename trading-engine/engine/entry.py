@@ -78,7 +78,15 @@ ZONE_PROXIMITY_ATR_MULT = 1.0
 # then -$22.66 avg) -- 15m carries the strongest, most consistent signal;
 # 5m is a smaller, less consistent secondary check. Kept behind its own
 # kill switch (RSI_MOMENTUM_GATE_ENABLED) same as the Forex app's gate.
-RSI_MOMENTUM_GATE_ENABLED = True
+RSI_MOMENTUM_GATE_ENABLED = False  # [OFF 2026-09-10, explicit user instruction] Temporarily
+# disabled to observe trade frequency without it -- user was unconvinced
+# it wasn't the reason for a quiet stretch (deployed ~02:37 UTC, roughly 4.5h
+# with no new trade by ~07:00 UTC vs. an expected ~10/day baseline). Live
+# diagnostics during that stretch found RSI touching only 1-2 of 21 pairs
+# at any given moment (MSS structural-break gate was the main bottleneck),
+# but turning it off directly settles it with a clean A/B rather than
+# more diagnostics. rsi_5m_state/rsi_15m_state are still computed and
+# logged in reasons.gate either way -- only the actual blocking is toggled.
 RSI_MOMENTUM_SLOPE_LOOKBACK_BARS = 3
 RSI_MOMENTUM_SLOPE_THRESHOLD = 0.5
 RSI_MOMENTUM_MIN_BARS = RSI_MOMENTUM_SLOPE_LOOKBACK_BARS + 15  # RSI14 warmup
