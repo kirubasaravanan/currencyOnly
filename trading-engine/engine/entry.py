@@ -38,6 +38,7 @@ from indicators.indicators import (
     fair_value_gaps,
     order_blocks,
     atr as atr_indicator,
+    rsi as rsi_indicator,
 )
 from engine.liquidity_pools import compute_liquidity_pools
 from engine.mtf_trend import mtf_alignment
@@ -56,6 +57,31 @@ ADX_TREND_THRESHOLD = 20.0
 RSI_BULL, RSI_BEAR = 55.0, 45.0
 CHOP_THRESHOLD = 50.0
 ZONE_PROXIMITY_ATR_MULT = 1.0
+
+# [ADD 2026-09-10, explicit user instruction: "i feel like the currencies
+# don't respect the RSI and move till rsi 10-90 but ... worth considering
+# whether it is increasing or decreasing ... before considering the
+# trade"] RSI_BULL/RSI_BEAR above only check RSI's absolute LEVEL as a
+# soft, size-scaling factor -- it says nothing about which way RSI is
+# moving, so a trade can fire while RSI is actively fading against it.
+# This is a separate, harder gate on RSI14's SLOPE, ported from the
+# sister Forex app's 1m+5m agreement gate but re-tuned for FX: validated
+# against 245 of currencyOnly's own real demo trades (login 110875560,
+# 30-day window) before shipping, same discipline as every other change
+# this session. A straight 1m+5m port (Forex app's own pairing, tuned on
+# gold) did NOT hold up here -- 1m/5m disagreement was the single BEST
+# bucket, not the worst, so blocking on it would have thrown away real
+# profit. Re-tested on 5m+15m instead: the "block if either is fading"
+# bucket was net -$613.97 over 90 trades (45.6% win) vs. the pass bucket's
+# +$1,465.20 over 155 trades (60.0% win), and 15m's fading effect alone
+# held up consistently across both halves of the sample (-$17.46 avg,
+# then -$22.66 avg) -- 15m carries the strongest, most consistent signal;
+# 5m is a smaller, less consistent secondary check. Kept behind its own
+# kill switch (RSI_MOMENTUM_GATE_ENABLED) same as the Forex app's gate.
+RSI_MOMENTUM_GATE_ENABLED = True
+RSI_MOMENTUM_SLOPE_LOOKBACK_BARS = 3
+RSI_MOMENTUM_SLOPE_THRESHOLD = 0.5
+RSI_MOMENTUM_MIN_BARS = RSI_MOMENTUM_SLOPE_LOOKBACK_BARS + 15  # RSI14 warmup
 
 # [FIX 2026-08-16, round 2] Unifying everything into one blended score
 # (round 1 of this fix) still under-produced trades versus V109's own real
@@ -152,6 +178,34 @@ def _entry_cutoff_reached(symbol: str, now: datetime) -> bool:
     minutes = _ist_minutes_of_day(now)
     last_window_end = max(end for _, end in PAIR_CALIBRATION[symbol].session_windows_ist)
     return minutes >= last_window_end - ENTRY_CUTOFF_MINUTES_BEFORE_CLOSE
+
+
+def _rsi_momentum_state(df: Optional[pd.DataFrame], direction: str) -> Optional[str]:
+    """"building" / "fading" / "flat" for RSI14's slope over the last
+    RSI_MOMENTUM_SLOPE_LOOKBACK_BARS bars on `df`, normalized to the
+    trade's own direction (positive slope = building for bullish, negative
+    = building for bearish). None if there isn't enough bar history to
+    compute it (fails OPEN -- caller must not block on missing data, same
+    convention as range_baseline being None elsewhere in this file).
+    Reuses df["rsi14"] when already computed (df_15m, post-compute_all)
+    rather than recomputing it a second time; computes it fresh off
+    "close" for frames that don't carry it yet (df_5m)."""
+    if df is None or len(df) < RSI_MOMENTUM_MIN_BARS:
+        return None
+    rsi_series = df["rsi14"] if "rsi14" in df.columns else rsi_indicator(df["close"], 14)
+    if len(rsi_series) < RSI_MOMENTUM_SLOPE_LOOKBACK_BARS + 1:
+        return None
+    now_rsi = rsi_series.iloc[-1]
+    prev_rsi = rsi_series.iloc[-1 - RSI_MOMENTUM_SLOPE_LOOKBACK_BARS]
+    if pd.isna(now_rsi) or pd.isna(prev_rsi):
+        return None
+    raw_slope = float(now_rsi - prev_rsi)
+    slope = raw_slope if direction == "bullish" else -raw_slope
+    if slope > RSI_MOMENTUM_SLOPE_THRESHOLD:
+        return "building"
+    if slope < -RSI_MOMENTUM_SLOPE_THRESHOLD:
+        return "fading"
+    return "flat"
 
 
 def _find_recent_sweep(df_15m: pd.DataFrame, pools, sweep_mem: int) -> Optional[Dict]:
@@ -308,6 +362,11 @@ def entry_signal(
         mss_col = "mss_bullish" if direction == "bullish" else "mss_bearish"
         if len(df_15m) < 4 or not bool(df_15m[mss_col].iloc[-4:-1].any()):
             return None
+
+    rsi_5m_state = _rsi_momentum_state(df_5m, direction)
+    rsi_15m_state = _rsi_momentum_state(df_15m, direction)
+    if RSI_MOMENTUM_GATE_ENABLED and (rsi_5m_state == "fading" or rsi_15m_state == "fading"):
+        return None
 
     pools = compute_liquidity_pools(symbol, df_15m, df_1d)
 
@@ -486,6 +545,8 @@ def entry_signal(
                 "mss_bearish": mss_bearish,
                 "parabolic_blocked": False,
                 "trend_filter_applied": calib.use_trend_filter,
+                "rsi_momentum_5m": rsi_5m_state,
+                "rsi_momentum_15m": rsi_15m_state,
             },
             "confluence": factor_scores,
             "session_dominance": dominance,
