@@ -853,6 +853,32 @@ SESSION_DOMINANT_CURRENCIES: Dict[str, FrozenSet[str]] = {
 # safety margin than the initial trial value.
 NEWS_BLACKOUT_MINUTES = 30
 
+# [ADD 2026-09-10, explicit user instruction] Manual fallback for when
+# calendar.refresh() can't reach Forex Factory (found live today: a
+# retry-storm bug in macro_filter.py -- since fixed, see that file's
+# commit 7e67d51 -- had gotten this VPS's IP rate-limited there, so
+# in_blackout() was fail-open/blind despite a real, known news cluster
+# today). Entries here are checked by in_blackout() the same as fetched
+# events (same +-NEWS_BLACKOUT_MINUTES window), so this is a general
+# safety net for any future outage, not just today's -- normally empty,
+# only populated when a real upcoming high-impact event is independently
+# confirmed (e.g. from a Discord Morning Pulse alert sent before an outage
+# started) and automated fetching can't be relied on to catch it in time.
+# Each entry: (title, country, ISO datetime string).
+#
+# Today's entry: ECB rate decision + press conference (EUR) and US
+# PPI/Core PPI (USD), confirmed via the 08:01 IST Morning Pulse alert
+# (the one successful fetch before the rate-limit hit) -- times are the
+# source's own US-Eastern timestamps, parsed as-is (fromisoformat handles
+# the -04:00 offset correctly; no manual UTC conversion needed here).
+MANUAL_NEWS_OVERRIDES: List[Dict[str, str]] = [
+    {"title": "Main Refinancing Rate", "country": "EUR", "time": "2026-09-10T08:15:00-04:00"},
+    {"title": "Monetary Policy Statement", "country": "EUR", "time": "2026-09-10T08:15:00-04:00"},
+    {"title": "Core PPI m/m", "country": "USD", "time": "2026-09-10T08:30:00-04:00"},
+    {"title": "PPI m/m", "country": "USD", "time": "2026-09-10T08:30:00-04:00"},
+    {"title": "ECB Press Conference", "country": "EUR", "time": "2026-09-10T08:45:00-04:00"},
+]
+
 
 # ---------------------------------------------------------------------------
 # Correlation — net per-currency exposure cap (generalized beyond a fixed

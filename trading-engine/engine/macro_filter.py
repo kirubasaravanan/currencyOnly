@@ -17,6 +17,7 @@ from typing import Dict, List
 import pandas as pd
 import yfinance as yf
 
+import config
 from config import NEWS_BLACKOUT_MINUTES
 
 FOREX_FACTORY_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
@@ -92,7 +93,16 @@ class EconomicCalendar:
         self.refresh()
         now = datetime.now(timezone.utc)
         minutes = NEWS_BLACKOUT_MINUTES
-        for e in self._events:
+        # [ADD 2026-09-10] MANUAL_NEWS_OVERRIDES checked the same as
+        # auto-fetched events -- see its own docstring in config.py for
+        # why (a real calendar-fetch outage today, general fallback going
+        # forward). Parsed lazily here rather than at import time so config
+        # stays plain data with no datetime-parsing side effects at import.
+        override_events = [
+            {"title": o["title"], "country": o["country"], "time": datetime.fromisoformat(o["time"])}
+            for o in config.MANUAL_NEWS_OVERRIDES
+        ]
+        for e in self._events + override_events:
             delta_minutes = abs((e["time"] - now).total_seconds() / 60)
             if delta_minutes <= minutes:
                 return {
