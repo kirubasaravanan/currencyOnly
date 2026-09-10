@@ -484,13 +484,16 @@ async def alert_news_blackout(event_title: str, country: str, blackout_start: da
     every scan cycle it stays active -- same convention as that function).
     Carries both the start and end time so a separate "resumed" message
     isn't needed -- the window is fixed and known the moment this fires."""
+    # [ADD 2026-09-10, explicit user instruction] Added IST alongside UTC
+    # -- this app's timezone convention everywhere else (_fmt_ist, used for
+    # trade open/close times) but this alert had only ever shown UTC.
     embed = {
         "title": "📅 News blackout -- new entries paused for all pairs",
         "color": AMBER,
         "fields": [
             {"name": "Event", "value": f"{event_title} ({country})", "inline": False},
-            {"name": "Blocked from", "value": blackout_start.strftime("%H:%M UTC"), "inline": True},
-            {"name": "Blocked until", "value": blackout_end.strftime("%H:%M UTC"), "inline": True},
+            {"name": "Blocked from", "value": f"{blackout_start.strftime('%H:%M UTC')} ({_fmt_ist(blackout_start.isoformat())})", "inline": True},
+            {"name": "Blocked until", "value": f"{blackout_end.strftime('%H:%M UTC')} ({_fmt_ist(blackout_end.isoformat())})", "inline": True},
         ],
         "description": "Existing open positions are unaffected -- this only blocks new entries during the window.",
     }
