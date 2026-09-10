@@ -208,6 +208,17 @@ def _rsi_momentum_state(df: Optional[pd.DataFrame], direction: str) -> Optional[
     return "flat"
 
 
+def _last_rsi14(df: Optional[pd.DataFrame]) -> Optional[float]:
+    """Real RSI14 value at the last bar, for logging only -- lets a block
+    be checked against actual market data instead of trusting the
+    building/flat/fading label alone."""
+    if df is None or len(df) == 0:
+        return None
+    series = df["rsi14"] if "rsi14" in df.columns else rsi_indicator(df["close"], 14)
+    val = series.iloc[-1]
+    return None if pd.isna(val) else round(float(val), 2)
+
+
 def _find_recent_sweep(df_15m: pd.DataFrame, pools, sweep_mem: int) -> Optional[Dict]:
     """Scans the last `sweep_mem` bars (not just the latest one) for a
     liquidity sweep, keeping the most recent match — approximates V109's
@@ -366,6 +377,17 @@ def entry_signal(
     rsi_5m_state = _rsi_momentum_state(df_5m, direction)
     rsi_15m_state = _rsi_momentum_state(df_15m, direction)
     if RSI_MOMENTUM_GATE_ENABLED and (rsi_5m_state == "fading" or rsi_15m_state == "fading"):
+        # [ADD 2026-09-10, explicit user instruction: "monitor a few trades
+        # and confirm the gate is blocking as expected and also working
+        # with real data and not zeoring"] Was silent -- indistinguishable
+        # in logs from any other early-return above. Prints the real RSI14
+        # values (not just the classification) specifically so a block can
+        # be checked against real market data rather than a stuck/default
+        # value (same observability gap the sister Forex app hit and fixed
+        # for its own version of this gate, see commit 4917a53).
+        print(f"[entry] {symbol} {direction} blocked by RSI momentum gate -- "
+              f"5m={rsi_5m_state} (rsi={_last_rsi14(df_5m)}) "
+              f"15m={rsi_15m_state} (rsi={_last_rsi14(df_15m)})")
         return None
 
     pools = compute_liquidity_pools(symbol, df_15m, df_1d)
