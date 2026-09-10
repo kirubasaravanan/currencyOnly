@@ -31,7 +31,19 @@ class EconomicCalendar:
         self._last_fetch = 0.0
 
     def refresh(self) -> None:
-        if self._events and time.time() - self._last_fetch < CALENDAR_CACHE_TTL_SECONDS:
+        # [FIX 2026-09-10, explicit user instruction, found while checking
+        # whether news was blocking trades] Was `if self._events and ...` --
+        # the TTL backoff only applied once a fetch had already succeeded,
+        # so a FAILED fetch left self._events empty forever and every
+        # subsequent call (in_blackout() is checked once per symbol per
+        # scan tick, so up to ~21x/60s) retried immediately with no
+        # backoff at all. That retry storm is what kept Forex Factory
+        # 429-rate-limiting this VPS's IP indefinitely -- self-inflicted,
+        # never able to recover. Now the TTL applies unconditionally
+        # (self._last_fetch is already stamped before every attempt,
+        # success or failure), so a failure gets the same 10-minute
+        # breathing room a success does.
+        if time.time() - self._last_fetch < CALENDAR_CACHE_TTL_SECONDS:
             return
         self._last_fetch = time.time()
         try:
