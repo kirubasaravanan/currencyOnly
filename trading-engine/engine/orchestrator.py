@@ -602,7 +602,8 @@ async def _check_fundednext_aggregate_risk() -> None:
     )
 
 
-_relayed_partial_ids: set = set()
+_relayed_partial_targets: Dict[int, set] = {}
+_partial_alerted_ids: set = set()
 
 
 async def _process_partial_takes() -> None:
@@ -610,15 +611,52 @@ async def _process_partial_takes() -> None:
     50%-at-TP1 mechanic — dynamic EXIT_MODE only). _take_partial() doesn't
     move a trade into closed_trades the way a full close does, so this
     can't reuse the closed-trades diff above; needs its own pass over
-    open_positions."""
+    open_positions.
+
+    [FIX 2026-09-11, found live: fundednext-25k's GBPCAD partial-close hit
+    a transient "no matching open position found" from direct_mt5_relay
+    (the real position was confirmed present the whole time via MT5's own
+    deal history and magic number -- a transient query hiccup around the
+    same window OANDA was also erroring, not a genuine desync) and was
+    silently marked as permanently relayed anyway, since the old code
+    added the trade id to a single global _relayed_partial_ids set BEFORE
+    checking whether any target actually succeeded. That one missed
+    partial cost a real ~$76 difference vs. demo's correctly-managed exit
+    on the same trade (fundednext rode the full position into SL instead
+    of locking in half at TP1 like demo did). Now tracks success PER
+    TARGET (tradesgnl/pineconnector/each direct MT5 account), so a
+    transient failure on one target gets retried next scan while
+    already-succeeded targets are never re-sent -- no risk of a duplicate
+    partial-close action reaching TradeSgnl/PineConnector, both external
+    systems this code has no visibility into for whether a resend would
+    even be handled idempotently on their end. The Discord alert still
+    fires only once per trade (first attempt), tracked separately, so
+    retries on a stuck target don't spam repeat notifications."""
     for t in broker.open_positions:
-        if t.get("partial_taken") and t["id"] not in _relayed_partial_ids:
-            _relayed_partial_ids.add(t["id"])
-            relayed = await tradesgnl_relay.send_partial_close(t, source="process_partial_takes")
-            await pineconnector_relay.send_partial_close(t, source="process_partial_takes")
-            for acct in _direct_accounts_for_symbol(t["symbol"]):
-                await direct_mt5_relay.send_partial_close(acct, t, source="process_partial_takes")
-            await discord_alerts.alert_partial_close(t, relayed)
+        if not t.get("partial_taken"):
+            continue
+        done = _relayed_partial_targets.setdefault(t["id"], set())
+        direct_accounts = _direct_accounts_for_symbol(t["symbol"])
+        needed = {"tradesgnl", "pineconnector"} | {f"direct:{a.label}" for a in direct_accounts}
+        if needed <= done:
+            continue
+
+        tradesgnl_ok = "tradesgnl" in done
+        if "tradesgnl" not in done and await tradesgnl_relay.send_partial_close(t, source="process_partial_takes"):
+            done.add("tradesgnl")
+            tradesgnl_ok = True
+
+        if "pineconnector" not in done and await pineconnector_relay.send_partial_close(t, source="process_partial_takes"):
+            done.add("pineconnector")
+
+        for acct in direct_accounts:
+            key = f"direct:{acct.label}"
+            if key not in done and await direct_mt5_relay.send_partial_close(acct, t, source="process_partial_takes"):
+                done.add(key)
+
+        if t["id"] not in _partial_alerted_ids:
+            _partial_alerted_ids.add(t["id"])
+            await discord_alerts.alert_partial_close(t, tradesgnl_ok)
 
 
 def _majors_subset(trades: List[Dict]) -> List[Dict]:
