@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import urllib.request
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pandas as pd
 import yfinance as yf
@@ -23,7 +24,53 @@ from config import NEWS_BLACKOUT_MINUTES
 FOREX_FACTORY_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 CALENDAR_CACHE_TTL_SECONDS = 600
 
+# [ADD 2026-09-14, explicit user instruction] MQL5's own calendar service
+# (MQL5.com, same data MT5's terminal Calendar tab shows), exported by a
+# small EA (SharedCalendarExport.mq5, running on the demo-unrestricted
+# terminal, login 110875560) to this OS-level shared folder every 5
+# minutes -- readable by any process on this machine via a plain path, no
+# MT5 API needed. No rate limit (it's a local file, not a network call),
+# so this is now tried FIRST; Forex Factory is the fallback, not the
+# other way around, matching why this was built in the first place (that
+# endpoint's rate limit has bitten this VPS twice already). Same shared
+# file also read by the sister Forex app's own macro_filter.py.
+SHARED_CALENDAR_PATH = r"C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal\Common\Files\shared_calendar.json"
+SHARED_CALENDAR_MAX_AGE_SECONDS = 20 * 60  # EA refreshes every 5 min -- generous buffer before treating it as stale
 
+
+
+
+def _load_shared_calendar() -> Optional[List[Dict]]:
+    """Reads SharedCalendarExport.mq5's output. Returns None (never an
+    empty list) on any problem -- missing file, stale mtime, or bad JSON
+    -- so the caller can tell "no shared data available" apart from "shared
+    data says nothing high-impact is coming", and fall back to Forex
+    Factory only in the former case."""
+    try:
+        mtime = os.path.getmtime(SHARED_CALENDAR_PATH)
+    except OSError:
+        return None
+    if time.time() - mtime > SHARED_CALENDAR_MAX_AGE_SECONDS:
+        return None
+    try:
+        with open(SHARED_CALENDAR_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception:  # noqa: BLE001
+        return None
+
+    events = []
+    for item in raw:
+        try:
+            dt = datetime.fromisoformat(item["time"].replace("Z", "+00:00"))
+        except Exception:  # noqa: BLE001
+            continue
+        events.append({
+            "title": item.get("title", ""),
+            "country": item.get("country", ""),
+            "time": dt,
+            "impact": item.get("impact", ""),
+        })
+    return events
 
 
 class EconomicCalendar:
@@ -43,10 +90,18 @@ class EconomicCalendar:
         # never able to recover. Now the TTL applies unconditionally
         # (self._last_fetch is already stamped before every attempt,
         # success or failure), so a failure gets the same 10-minute
-        # breathing room a success does.
+        # breathing room a success does. Same TTL now also gates the
+        # shared-file read below -- it's a cheap local read, not a rate-
+        # limited network call, but there's still no reason to re-parse it
+        # on every single in_blackout() check (up to ~21x/60s).
         if time.time() - self._last_fetch < CALENDAR_CACHE_TTL_SECONDS:
             return
         self._last_fetch = time.time()
+
+        shared = _load_shared_calendar()
+        if shared is not None:
+            self._events = shared
+            return
         try:
             req = urllib.request.Request(FOREX_FACTORY_URL, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=10) as resp:
