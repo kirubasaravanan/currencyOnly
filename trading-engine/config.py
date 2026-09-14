@@ -785,6 +785,28 @@ GLOBAL_SESSION_CUTOFF_MINUTES = 22 * 60  # 22:00 IST
 # be running" in the instruction above.
 GLOBAL_SESSION_START_MINUTES = 5 * 60  # 05:00 IST
 
+# [ADD 2026-09-14, explicit user instruction, real-trade-data-driven] Two
+# day-specific overrides of the two constants above, found by an hourly
+# breakdown of the last 60 days of real demo trades (login 110875560):
+#
+# MONDAY: 05:00 and 06:00 IST were both consistently negative (7 trades
+# avg -$18.43, 9 trades avg -$22.94 -- 16 trades, -$335.52 combined),
+# consistent with post-weekend-gap thin liquidity/false breakouts before
+# the market finds real direction. 07:00 had zero trades that hour either
+# way, and from 11:00 onward Monday is strongly positive (10 trades avg
+# +$67.86, 8 trades avg +$50.12 at 13:00) -- Monday as a WHOLE DAY is
+# actually one of the best performers (+$718.11 net/55 trades), so this
+# isn't "avoid Monday", just its first two hours.
+MONDAY_SESSION_START_MINUTES = 7 * 60  # 07:00 IST, Monday only
+
+# FRIDAY: 15:00 through 22:00 IST was negative in EVERY hour with trades
+# (16 trades, -$345.78 combined, avg -$21.61/trade) -- a longer, more
+# consistent late-day stretch than Monday's, plausibly position-squaring/
+# thinning liquidity into the weekend close. 14:00 was flat (6 trades,
+# avg +$0.21), so the cut lands right at the last non-negative hour rather
+# than inside the losing stretch.
+FRIDAY_SESSION_CUTOFF_MINUTES = 14 * 60  # 14:00 IST, Friday only
+
 # [ADD 2026-08-18, explicit user instruction] Daily give-back circuit
 # breaker -- account-wide, based on REALIZED P&L only (matches
 # scripts/daily_giveback_report.py's own simplification: a "protect

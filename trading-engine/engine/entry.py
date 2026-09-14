@@ -153,10 +153,18 @@ def _in_session(symbol: str, now: datetime) -> bool:
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
     ist_now = now.astimezone(timezone.utc) + timedelta(minutes=IST_OFFSET_MINUTES)
-    if ist_now.weekday() >= 5:  # Saturday=5, Sunday=6 -- no trading day at all
+    weekday = ist_now.weekday()
+    if weekday >= 5:  # Saturday=5, Sunday=6 -- no trading day at all
         return False
     minutes = ist_now.hour * 60 + ist_now.minute
-    if minutes >= config.GLOBAL_SESSION_CUTOFF_MINUTES or minutes < config.GLOBAL_SESSION_START_MINUTES:
+    # [ADD 2026-09-14, explicit user instruction, real-trade-data-driven --
+    # see config.py's own note on MONDAY_SESSION_START_MINUTES/
+    # FRIDAY_SESSION_CUTOFF_MINUTES for the hourly breakdown that justified
+    # these] Day-specific overrides of the global start/cutoff -- every
+    # other weekday keeps the standard 05:00-22:00 IST bounds.
+    day_start = config.MONDAY_SESSION_START_MINUTES if weekday == 0 else config.GLOBAL_SESSION_START_MINUTES
+    day_cutoff = config.FRIDAY_SESSION_CUTOFF_MINUTES if weekday == 4 else config.GLOBAL_SESSION_CUTOFF_MINUTES
+    if minutes >= day_cutoff or minutes < day_start:
         return False
     for start, end in PAIR_CALIBRATION[symbol].session_windows_ist:
         if start <= minutes < end:
