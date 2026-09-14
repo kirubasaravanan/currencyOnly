@@ -150,8 +150,13 @@ def _ist_minutes_of_day(now: datetime) -> int:
 
 
 def _in_session(symbol: str, now: datetime) -> bool:
-    minutes = _ist_minutes_of_day(now)
-    if minutes >= config.GLOBAL_SESSION_CUTOFF_MINUTES:
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    ist_now = now.astimezone(timezone.utc) + timedelta(minutes=IST_OFFSET_MINUTES)
+    if ist_now.weekday() >= 5:  # Saturday=5, Sunday=6 -- no trading day at all
+        return False
+    minutes = ist_now.hour * 60 + ist_now.minute
+    if minutes >= config.GLOBAL_SESSION_CUTOFF_MINUTES or minutes < config.GLOBAL_SESSION_START_MINUTES:
         return False
     for start, end in PAIR_CALIBRATION[symbol].session_windows_ist:
         if start <= minutes < end:

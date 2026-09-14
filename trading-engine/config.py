@@ -768,6 +768,23 @@ MAX_DRAWDOWN_PCT = 10.0
 # silently reintroduce overnight-held positions or after-hours entries.
 GLOBAL_SESSION_CUTOFF_MINUTES = 22 * 60  # 22:00 IST
 
+# [ADD 2026-09-14, explicit user instruction: "the application should
+# taken trades 5AM to 10PM from mon-fri other days it should not take
+# trades but the application be running"] Mirrors the cutoff above as an
+# explicit floor -- every pair's own session_windows_ist already starts at
+# 05:00 or later in practice, same "redundant on paper, real safety net
+# against a future config edit" reasoning as GLOBAL_SESSION_CUTOFF_MINUTES.
+# The actual NEW gap this closes is day-of-week: nothing previously
+# checked that `now` falls on a weekday at all, so a Saturday/Sunday
+# candidate would have been evaluated purely on time-of-day and could
+# have traded if it happened to fall inside a pair's window and the price
+# feed still returned data. entry.py._in_session() and
+# trade_manager.is_session_close() both now check IST weekday first (Mon-
+# Fri only) -- the engine process itself keeps running every day, this
+# only gates entries/open-position tolerance, matching "the application
+# be running" in the instruction above.
+GLOBAL_SESSION_START_MINUTES = 5 * 60  # 05:00 IST
+
 # [ADD 2026-08-18, explicit user instruction] Daily give-back circuit
 # breaker -- account-wide, based on REALIZED P&L only (matches
 # scripts/daily_giveback_report.py's own simplification: a "protect
