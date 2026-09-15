@@ -617,8 +617,18 @@ PAIR_CALIBRATION: Dict[str, PairCalibration] = {
     # dominant (per session_dominance.py's own mapping) and was
     # consistently the worst part of the pair's day (-163, -184, -167
     # across 17:00/19:00/20:00). Single contiguous window replacing both.
+    # [FIX 2026-09-15, explicit user instruction, real-trade-data-driven]
+    # Trimmed from 0500-1700 to match the real Asian session (0530-1230
+    # IST = 00:00-07:00 UTC) -- AUDJPY's own dominance_score can never
+    # register "clean" (AUD and JPY share the same home session), so it's
+    # always either "battle" (both active together, i.e. genuinely
+    # inside Asian hours) or "quiet" (outside it, neither leg active).
+    # Real trades: quiet-hour trades (the 1230-1700 IST portion this
+    # trims) were 14.3% win, -$164.05 across 7 trades; the Asian-hours
+    # portion was 50.0% win, +$104.32 across 14. Swings the pair from net
+    # -$59.73 to +$104.32 overall.
     "AUDJPY": PairCalibration(
-        session_windows_ist=_ist("0500-1700"), stop_mult=1.20, tp_mult=2.80,
+        session_windows_ist=_ist("0530-1230"), stop_mult=1.20, tp_mult=2.80,
         min_base=0.05, max_sl_pips=45, min_sl_pips=8, para_thresh=0.45,
         use_trend_filter=False, activation_usd=40.0,
     ),
