@@ -719,8 +719,17 @@ PAIR_CALIBRATION: Dict[str, PairCalibration] = {
     # (CAD is never London-dominant, JPY is never overlap/NY-dominant --
     # no "battle" session possible here either). Asian KZ (05:30-09:30
     # IST, JPY) + NY KZ (16:30-19:30 IST, CAD).
+    # [FIX 2026-09-15, explicit user instruction, real-trade-data-driven]
+    # Dropped the second window (1630-1930 IST) entirely. Real trades in
+    # its 1630-1859 portion were 25.0% win, -$200.16 across 8 trades,
+    # almost all stop-loss hits, while the untouched 0530-0930 window was
+    # 71.4% win, +$30.84 (swings the pair from net -$169.32 to +$30.84
+    # overall). Kept just trimming the window rather than the narrower
+    # 1900-1930 alternative -- that tiny leftover slice has zero real
+    # trades to confirm it's actually good, just that removing the bad
+    # hours before it helps; not worth keeping an unvalidated sliver.
     "CADJPY": PairCalibration(
-        session_windows_ist=_ist("0530-0930,1630-1930"), max_sl_pips=45, min_sl_pips=8,
+        session_windows_ist=_ist("0530-0930"), max_sl_pips=45, min_sl_pips=8,
         min_base=0.05, use_trend_filter=False, activation_usd=40.0,
     ),
     # [FIX 2026-08-21, explicit user instruction, discovery-backtest
