@@ -543,8 +543,17 @@ PAIR_CALIBRATION: Dict[str, PairCalibration] = {
         sweep_lb=25, mss_lb=6, max_sl_pips=50, min_sl_pips=10, min_base=0.0007,
         conf_boost=0.05, use_trend_filter=False, activation_usd=50.0,
     ),
+    # [FIX 2026-09-15, explicit user instruction, real-trade-data-driven]
+    # 08:00-11:00 UTC (13:30-16:30 IST) carved out -- real trades showed
+    # this specific stretch (later in London session, not the open) was
+    # 22.2% win, -$263.25 across 9 trades, almost entirely stop-loss hits,
+    # while the rest of the window was 75.0% win, +$50.50 across 4 trades.
+    # Swings the pair from net -$212.75 to +$50.50 overall. Note this is a
+    # DIFFERENT bad window than GBPCAD/EURCAD's own fix (07:00-09:00 UTC,
+    # the London open specifically) -- each pair's bad stretch was found
+    # and validated independently, not assumed to be the same hours.
     "EURUSD": PairCalibration(
-        session_windows_ist=_ist("1130-1900"), stop_mult=1.00, tp_mult=3.00,
+        session_windows_ist=_ist("1130-1330,1630-1900"), stop_mult=1.00, tp_mult=3.00,
         use_trend_filter=True, activation_usd=30.0,
     ),
     "USDJPY": PairCalibration(
