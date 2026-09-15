@@ -17,6 +17,7 @@ from config import (
     MAX_DRAWDOWN_PCT,
     LOT_BOUNDS,
     CONTRACT_SIZE_USD,
+    RISK_BAND_SCALE_NOT_SKIP_PAIRS,
 )
 from engine.fx_conversion import usd_conversion_rate
 
@@ -65,7 +66,7 @@ def position_size(symbol: str, equity: float, entry_price: float, sl_price: floa
     lots = max(min_lots, min(raw_lots, max_lots))
 
     actual_risk_usd = (lots * sl_dist * contract * conv) if sl_dist > 0 and conv > 0 else 0.0
-    lots, skip = _apply_tiered_risk_bands(lots, actual_risk_usd, min_lots, max_lots)
+    lots, skip = _apply_tiered_risk_bands(symbol, lots, actual_risk_usd, min_lots, max_lots)
 
     return {
         "lots": round(lots, 2),
@@ -114,7 +115,7 @@ def position_size(symbol: str, equity: float, entry_price: float, sl_price: floa
 # The "skip" case returns lots unchanged but flags `skip: True`; callers
 # must check it before opening the trade at all, same pattern as every
 # other blocking check in this file.
-def _apply_tiered_risk_bands(lots: float, actual_risk_usd: float, min_lots: float, max_lots: float):
+def _apply_tiered_risk_bands(symbol: str, lots: float, actual_risk_usd: float, min_lots: float, max_lots: float):
     if actual_risk_usd <= 0:
         return lots, False
     if actual_risk_usd <= 30.0:
@@ -123,7 +124,7 @@ def _apply_tiered_risk_bands(lots: float, actual_risk_usd: float, min_lots: floa
         return lots * min(target_scale, max_scale), False
     if actual_risk_usd <= 50.0:
         return lots, False
-    if actual_risk_usd <= 80.0:
+    if actual_risk_usd <= 80.0 or symbol in RISK_BAND_SCALE_NOT_SKIP_PAIRS:
         target_scale = 50.0 / actual_risk_usd
         min_scale = (min_lots / lots) if lots > 0 else target_scale
         return lots * max(target_scale, min_scale), False

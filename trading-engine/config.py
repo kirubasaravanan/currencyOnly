@@ -986,6 +986,25 @@ PAIR_GATE_MODE_OVERRIDE: Dict[str, bool] = {}
 # evidence per pair, not by assumption from one pair's result.
 STRUCTURAL_TP_FLOOR_SKIP_PAIRS: FrozenSet[str] = frozenset({"NZDUSD"})
 
+# [ADD 2026-09-15, explicit user instruction, found live: "why zero trades
+# on GBPAUD/GBPJPY/EURJPY this week"] risk.py's >$80-actual-risk skip
+# (see its own docstring on _apply_tiered_risk_bands) was validated only
+# against the 7 majors (EURUSD/GBPUSD/AUDUSD/NZDUSD/USDJPY/USDCHF/USDCAD)
+# -- for those, starting above $80 really is an occasional risky outlier
+# worth filtering. For these 3 pairs it isn't: GBPAUD's stop_mult=2.20 is
+# the widest in this whole config, and combined with GBPJPY/EURJPY's own
+# typical stop widths, EVERY qualifying candidate naturally computes
+# >$80 raw risk even at max_lots at this account's current equity --
+# confirmed live: 10/10 GBPAUD, 1/1 GBPJPY, 3/3 EURJPY real candidates
+# over 5 real days were silently skipped, a 100% blanket skip, not the
+# occasional-outlier filtering the rule was built for. Scoped exception,
+# not a global change to the skip rule (every other pair keeps the
+# validated skip-above-$80 behavior) -- these 3 instead scale DOWN
+# toward the same $50 target the existing $50-80 band already uses,
+# floored at the pair's own min_lots, so a trade still happens instead
+# of being silently zeroed out.
+RISK_BAND_SCALE_NOT_SKIP_PAIRS: FrozenSet[str] = frozenset({"GBPAUD", "GBPJPY", "EURJPY"})
+
 
 # ---------------------------------------------------------------------------
 # Engine cadence
