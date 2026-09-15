@@ -527,8 +527,19 @@ PAIR_CALIBRATION: Dict[str, PairCalibration] = {
         sweep_lb=25, mss_lb=6, max_sl_pips=45, min_sl_pips=10, min_base=0.0007,
         conf_boost=0.05, use_trend_filter=False, activation_usd=20.0,
     ),
+    # [FIX 2026-09-15, explicit user instruction, real-trade-data-driven]
+    # 07:00-09:00 UTC (12:30-14:30 IST) carved out of the 1130-1900 window
+    # -- real trades showed this specific London-open stretch was a
+    # consistent loser (3 trades, 0% win, -$145.36) driven by false-
+    # breakout stop-hunts right at the open (several losers had
+    # peak_favorable_move == 0.0 -- price never moved favorably at all
+    # before reversing), while the REST of the day's window was solidly
+    # profitable (7 trades, 57.1% win, +$58.18). Cross-checked against
+    # GBPUSD, which shows the OPPOSITE pattern for the same hours (its
+    # 07:00-09:00 trades are the GOOD ones) -- this fix is intentionally
+    # scoped to GBPCAD/EURCAD only, not applied as a general rule.
     "GBPCAD": PairCalibration(
-        session_windows_ist=_ist("0830-1030,1130-1900"), stop_mult=1.20, tp_mult=1.40,
+        session_windows_ist=_ist("0830-1030,1130-1230,1430-1900"), stop_mult=1.20, tp_mult=1.40,
         sweep_lb=25, mss_lb=6, max_sl_pips=50, min_sl_pips=10, min_base=0.0007,
         conf_boost=0.05, use_trend_filter=False, activation_usd=50.0,
     ),
@@ -612,8 +623,14 @@ PAIR_CALIBRATION: Dict[str, PairCalibration] = {
         max_sl_pips=40, min_sl_pips=6, min_base=0.0004, para_thresh=0.45,
         use_trend_filter=False, activation_usd=25.0,
     ),
+    # [FIX 2026-09-15, explicit user instruction, real-trade-data-driven]
+    # Same fix as GBPCAD's own note -- 07:00-09:00 UTC (12:30-14:30 IST)
+    # carved out: real trades were 6/6 losing at that specific London-open
+    # stretch (33.3% win, -$82.36) vs the rest of the window (83.3% win,
+    # +$40.02). GBPUSD checked and shows the opposite pattern for the same
+    # hours, so this fix is scoped to EURCAD/GBPCAD only.
     "EURCAD": PairCalibration(
-        session_windows_ist=_ist("0800-1900"), max_sl_pips=40, min_sl_pips=8,
+        session_windows_ist=_ist("0800-1230,1430-1900"), max_sl_pips=40, min_sl_pips=8,
         min_base=0.0005, use_trend_filter=True, activation_usd=40.0,
     ),
     "GBPNZD": PairCalibration(
